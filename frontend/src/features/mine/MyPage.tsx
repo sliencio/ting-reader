@@ -263,6 +263,7 @@ const MyPage: React.FC = () => {
               tone="text-blue-600 bg-blue-50 dark:bg-blue-900/20"
             />
             {user?.role === "admin" && (
+              <>
               <EntryItem
                 to="/cache"
                 icon={<Download size={22} />}
@@ -270,6 +271,9 @@ const MyPage: React.FC = () => {
                 description={t("mine.cacheManagementDescription")}
                 tone="text-sky-600 bg-sky-50 dark:bg-sky-900/20"
               />
+                <EntryItem to="/maintenance" icon={<Download size={22} />} title="服务端维护"
+                  description="备份恢复、缓存策略与故障诊断" tone="text-sky-600 bg-sky-50 dark:bg-sky-900/20" />
+              </>
             )}
             {user?.role === "admin" && (
               <EntryItem

@@ -9,6 +9,7 @@ pub mod progress;
 pub mod reading;
 pub mod scan_state;
 pub mod series;
+pub mod sync;
 pub mod system_settings;
 pub mod task;
 pub mod user;

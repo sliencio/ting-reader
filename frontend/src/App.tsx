@@ -23,6 +23,7 @@ import LogsPage from './features/admin/LogsPage';
 import PluginsPage from './features/admin/PluginsPage';
 import PluginLogsPage from './features/admin/PluginLogsPage';
 import CacheManagementPage from './features/mine/CacheManagementPage';
+import ServerMaintenancePage from './features/mine/ServerMaintenancePage';
 import WidgetPage from './features/widget/WidgetPage';
 import { useAuthStore } from './core/stores/authStore';
 import { getGatewayBasePath } from './core/utils/runtimeUrl';
@@ -78,6 +79,7 @@ function App() {
               <CacheManagementPage />
             </AdminRoute>
           } />
+          <Route path="maintenance" element={<AdminRoute><ServerMaintenancePage /></AdminRoute>} />
           <Route path="statistics" element={
             <AdminRoute>
               <AdminStatisticsPage />

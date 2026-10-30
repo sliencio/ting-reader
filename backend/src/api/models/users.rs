@@ -74,6 +74,8 @@ pub struct UpdateProgressRequest {
     pub position: f64,
     pub duration: Option<f64>,
     pub playback_start: Option<f64>,
+    pub base_revision: Option<i64>,
+    pub device_id: Option<String>,
 }
 
 // Favorites Management API models

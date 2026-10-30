@@ -25,16 +25,21 @@ impl WsSessionManager {
     /// Subscribe to progress updates for a user.
     /// Returns a receiver that will get all progress update messages for this user.
     pub async fn subscribe(&self, user_id: &str) -> broadcast::Receiver<String> {
-        let channels = self.channels.read().await;
-        if let Some(sender) = channels.get(user_id) {
-            sender.subscribe()
-        } else {
-            drop(channels);
-            let mut channels = self.channels.write().await;
-            let (tx, rx) = broadcast::channel(BROADCAST_CAPACITY);
-            channels.insert(user_id.to_string(), tx);
-            rx
-        }
+        let mut channels = self.channels.write().await;
+        channels
+            .entry(user_id.to_string())
+            .or_insert_with(|| broadcast::channel(BROADCAST_CAPACITY).0)
+            .subscribe()
+    }
+
+    pub async fn connected_users(&self) -> Vec<String> {
+        self.channels
+            .read()
+            .await
+            .iter()
+            .filter(|(_, sender)| sender.receiver_count() > 0)
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// Broadcast a progress update to all sessions of a user.

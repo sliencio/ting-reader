@@ -3,6 +3,23 @@ use axum::http::{StatusCode, header};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[tokio::test]
+async fn custom_window_memory_budget_and_idle_timeout_are_applied() {
+    let prefix = read_preload_prefix_with_limit(b"abcdef".as_slice(), 6, 2)
+        .await
+        .unwrap();
+    assert_eq!(prefix.data.as_ref(), b"ab");
+    assert_eq!(prefix.total_size, Some(6));
+    let mut cache = std::collections::HashMap::new();
+    let idle = std::time::Duration::from_secs(5);
+    insert_preload_cache_with(&mut cache, "old".into(), prefix.clone(), 3, idle);
+    insert_preload_cache_with(&mut cache, "new".into(), prefix, 3, idle);
+    assert_eq!(cache.len(), 1);
+    assert!(cache.contains_key("new"));
+    evict_expired_cache_with(&mut cache, std::time::Instant::now() + idle, idle);
+    assert!(cache.is_empty());
+}
+
 fn entry(data: bytes::Bytes, total_size: Option<u64>) -> PreloadedChapter {
     PreloadedChapter {
         data,

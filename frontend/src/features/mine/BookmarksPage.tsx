@@ -1,5 +1,5 @@
 import { apiErrorMessage } from '../../core/api/errors';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { BookMarked, Clock, MessageSquare, Pencil, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import apiClient from '../../core/api/client';
@@ -10,6 +10,7 @@ import BackButton from '../../shared/widgets/BackButton';
 import LoadingSpinner from '../../shared/ui/LoadingSpinner';
 import ActivityBookCard, { ActivityProgress } from './ActivityBookCard';
 import { chapterProgressPercent } from '../../core/utils/playbackPreferences';
+import { useServerRefresh } from '../../core/hooks/useServerChanges';
 
 
 const BookmarksPage: React.FC = () => {
@@ -26,22 +27,29 @@ const BookmarksPage: React.FC = () => {
   const [bookPage, setBookPage] = useState(1);
   const [totalBooks, setTotalBooks] = useState(0);
   const [playingBookmark, setPlayingBookmark] = useState(false);
+  const bookRequest = useRef(0);
+  const chapterRequests = useRef(new Map<string, number>());
 
-  const fetchBooks = useCallback(async (page = 1) => {
-    setLoadingBooks(true);
+  const fetchBooks = useCallback(async (page = 1, background = false) => {
+    const request = ++bookRequest.current;
+    if (!background) setLoadingBooks(true);
     try {
       const response = await apiClient.get<Page<ActivityBook>>('/api/bookmarks/books', { params: { page, page_size: 40 } });
+      if (request !== bookRequest.current) return;
       setBooks(response.data.items || []);
       setBookPage(page);
       setTotalBooks(response.data.total);
-      setExpanded(new Set());
-      setBookmarks({});
-      setPages({});
-      setTotals({});
+      if (!background) {
+        setExpanded(new Set());
+        setBookmarks({});
+        setPages({});
+        setTotals({});
+      }
+      return response.data.items || [];
     } catch (error) {
       console.error('获取书签书籍失败', error);
     } finally {
-      setLoadingBooks(false);
+      if (request === bookRequest.current) setLoadingBooks(false);
     }
   }, []);
   useEffect(() => {
@@ -49,10 +57,13 @@ const BookmarksPage: React.FC = () => {
     return () => window.clearTimeout(timer);
   }, [fetchBooks]);
 
-  const loadBookmarks = async (bookId: string, page: number) => {
+  const loadBookmarks = async (bookId: string, page: number, background = false) => {
+    const request = (chapterRequests.current.get(bookId) ?? 0) + 1;
+    chapterRequests.current.set(bookId, request);
     setLoadingIds((current) => new Set(current).add(bookId));
     try {
       const response = await apiClient.get<Page<Bookmark>>(`/api/bookmarks/books/${bookId}`, { params: { page, page_size: 50 } });
+      if (chapterRequests.current.get(bookId) !== request) return;
       setBookmarks((current) => ({ ...current, [bookId]: response.data.items }));
       setPages((current) => ({ ...current, [bookId]: page }));
       setTotals((current) => ({ ...current, [bookId]: response.data.total }));
@@ -61,11 +72,17 @@ const BookmarksPage: React.FC = () => {
       return response.data.total;
     } catch (error) {
       console.error('获取书签失败', error);
-      alert(apiErrorMessage(error, t('bookmarks.loadFailed', '加载书签失败')));
+      if (!background) alert(apiErrorMessage(error, t('bookmarks.loadFailed', '加载书签失败')));
     } finally {
-      setLoadingIds((current) => { const next = new Set(current); next.delete(bookId); return next; });
+      if (chapterRequests.current.get(bookId) === request) setLoadingIds((current) => { const next = new Set(current); next.delete(bookId); return next; });
     }
   };
+
+  useServerRefresh(async () => {
+    const latest = await fetchBooks(bookPage, true);
+    const ids = new Set(latest?.map(book => book.book_id));
+    await Promise.all([...expanded].filter(id => ids.has(id)).map(id => loadBookmarks(id, pages[id] || 1, true)));
+  });
 
   const toggleBook = (bookId: string) => {
     const open = expanded.has(bookId);

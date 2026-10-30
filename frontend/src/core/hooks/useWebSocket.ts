@@ -3,6 +3,7 @@ import { useAuthStore } from '../stores/authStore';
 import { usePlayerStore } from '../stores/playerStore';
 import { getRuntimeBaseUrl } from '../utils/runtimeUrl';
 import type { ApiErrorBody } from '../api/errors';
+import { acceptServerState } from './useServerChanges';
 
 interface ProgressUpdate {
   type: 'progress_updated';
@@ -17,7 +18,7 @@ interface ServerError extends ApiErrorBody {
   message: string;
 }
 
-type ServerMessage = ProgressUpdate | { type: 'pong' } | ServerError;
+type ServerMessage = ProgressUpdate | { type: 'pong' } | ServerError | {type:'server_changed'; state:unknown};
 
 /** Manages a persistent WebSocket connection for real-time progress sync */
 export function useWebSocket() {
@@ -158,6 +159,7 @@ export function useWebSocket() {
 /** Handle incoming messages from the server */
 function handleServerMessage(msg: ServerMessage) {
   switch (msg.type) {
+    case 'server_changed': acceptServerState(msg.state); break;
     case 'progress_updated': {
       // Update the current chapter's progress in the store
       // This enables cross-device/tab sync

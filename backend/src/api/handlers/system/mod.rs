@@ -1,5 +1,11 @@
 use crate::core::app::error::{ExternalErrorKind, InputErrorKind};
 mod diagnostics;
+pub(crate) mod maintenance;
+pub use maintenance::{
+    book_revision, cancel_restore, create_backup, delete_backup, diagnose_library, diagnostics,
+    download_backup, get_maintenance, import_backup, list_backups, restore_backup, sync_state,
+    update_maintenance,
+};
 mod statistics;
 mod tasks;
 pub use diagnostics::{get_metrics, health_check};

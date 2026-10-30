@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { FastAverageColor } from 'fast-average-color';
-import apiClient from '../../core/api/client';
+import { progressCoordinator } from '../../core/api/progressSync';
 import { usePlayerStore } from '../../core/stores/playerStore';
 import { getCoverUrl } from '../../core/utils/image';
 import { PlaybackSleep } from './playbackSession';
@@ -379,7 +379,7 @@ export const useNextChapterPreloader = (options: {
 };
 
 // ─── useProgressSync ────────────────────────────────────────────────────────
-// 进度同步：WS 可用时每 2 秒同步，断线时降级为 HTTP 每 15 秒同步；
+// 进度通过可校验版本的 HTTP 接口保存，实时连接用于接收其他设备变更。
 // 第一拍打 playbackStart 标记；
 // 同时暂停瞬间立即 flush 一次，避免丢最后几秒进度。
 // currentTime 用 ref 间接读，效避免每次时间变化都重建定时器。
@@ -388,17 +388,14 @@ export const useProgressSync = (options: {
   currentTime: number; isWsConnected: boolean;
   wsSendProgress: (bookId: string, chapterId: string, position: number, playbackStart?: number) => void;
 }) => {
-  const { bookId, chapterId, isWsConnected, wsSendProgress } = options;
-  const save = useCallback((position: number, playbackStart?: number, durable = false) => {
+  const { bookId, chapterId } = options;
+  const save = useCallback((position: number, playbackStart?: number) => {
     if (!bookId || !chapterId) return;
     const value = Math.max(0, Math.floor(position));
-    if (isWsConnected) wsSendProgress(bookId, chapterId, value, playbackStart);
-    if (!isWsConnected || durable) {
-      void apiClient.post('/api/progress', { book_id: bookId, chapter_id: chapterId,
+      void progressCoordinator.save({ book_id: bookId, chapter_id: chapterId,
         position: value, ...(playbackStart !== undefined ? { playback_start: playbackStart } : {}),
       }).catch((error: unknown) => console.error('Failed to persist playback progress', error));
-    }
-  }, [bookId, chapterId, isWsConnected, wsSendProgress]);
+  }, [bookId, chapterId]);
   const saveLatest = useEffectEvent((start = false) =>
     save(options.currentTime, start ? options.currentTime : undefined));
   const lastPlaying = useRef(false);
@@ -413,5 +410,5 @@ export const useProgressSync = (options: {
     const timer = setInterval(() => saveLatest(), options.isWsConnected ? 2000 : 15000);
     return () => clearInterval(timer);
   }, [options.isPlaying, options.bookId, options.chapterId, options.isWsConnected]);
-  return { flush: (position: number) => save(position, undefined, true) };
+  return { flush: (position: number) => save(position) };
 };

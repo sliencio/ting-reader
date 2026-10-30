@@ -1,23 +1,28 @@
 use super::*;
 
 #[test]
-fn migration_v31_preserves_progress_and_is_repeatable() {
+fn migration_v32_preserves_progress_and_is_repeatable() {
     let mut conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(
-        "PRAGMA foreign_keys=ON;
-         CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY);
-         INSERT INTO schema_migrations VALUES(30);
-         CREATE TABLE users(id TEXT PRIMARY KEY);
-         CREATE TABLE books(id TEXT PRIMARY KEY);
-         CREATE TABLE chapters(id TEXT PRIMARY KEY);
-         CREATE TABLE progress(position REAL);
-         INSERT INTO users VALUES('user');
-         INSERT INTO books VALUES('book');
-         INSERT INTO chapters VALUES('chapter');
-         INSERT INTO progress VALUES(12.5);",
-    )
-    .unwrap();
     run_migrations(&mut conn).unwrap();
+    let triggers = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'sync_%'")
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    for name in triggers {
+        conn.execute_batch(&format!("DROP TRIGGER \"{name}\";"))
+            .unwrap();
+    }
+    conn.execute_batch("DROP TABLE progress_heads; DROP TABLE sync_versions; DROP TABLE sync_clock;
+        DELETE FROM schema_migrations WHERE version=32;
+        PRAGMA foreign_keys=ON;
+        INSERT INTO users(id,username,password_hash) VALUES('user','reader','hash');
+        INSERT INTO libraries(id,name,type,url) VALUES('library','Test','local','');
+        INSERT INTO books(id,library_id,path,hash) VALUES('book','library','/book','hash');
+        INSERT INTO chapters(id,book_id,path) VALUES('chapter','book','/chapter');
+        INSERT INTO progress(id,user_id,book_id,chapter_id,position) VALUES('progress','user','book','chapter',12.5);").unwrap();
     conn.execute(
         "INSERT INTO chapter_read_marks VALUES('user','book','chapter')",
         [],
@@ -116,7 +121,14 @@ fn migration_v30_moves_legacy_title_flags_into_priority_without_losing_settings(
         .unwrap();
     }
     for _ in 0..2 {
-        run_migrations(&mut conn).unwrap();
+        let current: i64 = conn
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        if current < 30 {
+            migrate_metadata_priority(&mut conn).unwrap();
+        }
         for (id, _, original, priority) in &cases {
             let saved: String = conn
                 .query_row(

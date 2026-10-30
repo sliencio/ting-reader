@@ -139,6 +139,7 @@ impl ApiServer {
         // Create Preload Cache
         let preload_cache = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
         let preload_cache_for_expiration = Arc::downgrade(&preload_cache);
+        let preload_settings = system_settings_repo.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
@@ -146,10 +147,14 @@ impl ApiServer {
                 let Some(cache_lock) = preload_cache_for_expiration.upgrade() else {
                     break;
                 };
+                let policy = crate::core::maintenance::load_settings(&preload_settings)
+                    .await
+                    .unwrap_or_default();
                 let mut cache = cache_lock.write().await;
-                crate::api::handlers::media::stream::preload::evict_expired_cache(
+                crate::api::handlers::media::stream::preload::evict_expired_cache_with(
                     &mut cache,
                     std::time::Instant::now(),
+                    std::time::Duration::from_secs(policy.preload_idle_seconds),
                 );
             }
         });
@@ -369,6 +374,7 @@ impl ApiServer {
             .with_state(app_state.clone());
 
         // Create protected routes (authentication required)
+        crate::api::handlers::system::maintenance::start_services(&app_state);
         let protected_router = build_api_routes(app_state.clone()).layer(middleware::from_fn(
             move |mut req: Request, next: Next| {
                 let api_key = api_key.clone();

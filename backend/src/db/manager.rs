@@ -47,6 +47,8 @@ impl DatabaseManager {
             })?;
         }
 
+        crate::db::backup::prepare_database(db_path)?;
+
         // Create connection manager
         let manager = SqliteConnectionManager::file(db_path).with_init(move |conn| {
             // Enable foreign keys
@@ -144,12 +146,36 @@ impl DatabaseManager {
         F: FnOnce(&rusqlite::Transaction) -> Result<T> + Send + 'static,
         T: Send + 'static,
     {
+        self.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred, f)
+            .await
+    }
+
+    pub async fn transaction_immediate<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&rusqlite::Transaction) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate, f)
+            .await
+    }
+
+    async fn transaction_with_behavior<F, T>(
+        &self,
+        behavior: rusqlite::TransactionBehavior,
+        f: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&rusqlite::Transaction) -> Result<T> + Send + 'static,
+        T: Send + 'static,
+    {
         let pool = self.pool.clone();
 
         task::spawn_blocking(move || {
             let mut conn = pool.get().map_err(Self::pool_busy_error)?;
 
-            let tx = conn.transaction().map_err(TingError::DatabaseError)?;
+            let tx = conn
+                .transaction_with_behavior(behavior)
+                .map_err(TingError::DatabaseError)?;
             let result = f(&tx)?;
             tx.commit().map_err(TingError::DatabaseError)?;
 

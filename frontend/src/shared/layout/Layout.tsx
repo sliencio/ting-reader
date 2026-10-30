@@ -37,6 +37,8 @@ import DefaultAdminCredentialsDialog from '../../features/auth/DefaultAdminCrede
 import { isMiniPlayerHiddenPath } from '../../features/player/platform';
 import PluginExtensionHost from '../pluginExtensions/PluginExtensionHost';
 import PluginExtensionIcon from '../pluginExtensions/PluginExtensionIcon';
+import { useServerNotifications } from '../../core/hooks/useServerChanges';
+import ProgressConflictDialog from './ProgressConflictDialog';
 
 type NavItem = {
   icon: React.ReactNode;
@@ -46,6 +48,7 @@ type NavItem = {
 };
 
 const Layout: React.FC = () => {
+  useServerNotifications();
   const { t } = useTranslation();
   const { setLanguage } = useAppLanguage();
   const { refreshTheme } = useTheme(); // Initialize theme application
@@ -154,7 +157,7 @@ const Layout: React.FC = () => {
     { icon: <Home size={20} />, label: t('nav.home'), path: '/' },
     { icon: <Library size={20} />, label: t('nav.bookshelf'), path: '/bookshelf', matches: ['/bookshelf', '/book/', '/series/', '/search'] },
     { icon: <ListMusic size={20} />, label: t('nav.playlists'), path: '/playlists', matches: ['/playlists'] },
-    { icon: <User size={20} />, label: t('nav.mine'), path: '/mine', matches: ['/mine', '/history', '/bookmarks', '/favorites', '/personalization', '/notifications', '/statistics', '/admin/statistics', '/cache'] },
+    { icon: <User size={20} />, label: t('nav.mine'), path: '/mine', matches: ['/mine', '/history', '/bookmarks', '/favorites', '/personalization', '/notifications', '/statistics', '/admin/statistics', '/cache', '/maintenance'] },
   ] satisfies NavItem[];
 
   const adminItems = [
@@ -397,6 +400,7 @@ const Layout: React.FC = () => {
 
         {/* Player - Moved inside the right-side container to prevent sidebar overlap */}
         {hasCurrentChapter && <Player />}
+      <ProgressConflictDialog key={`${serverUrl}|${user?.id}`} />
         {!location.pathname.startsWith('/plugin-pages') && (
           <PluginExtensionHost />
         )}

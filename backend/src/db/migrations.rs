@@ -10,6 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
+pub const LATEST_SCHEMA_VERSION: i64 = 32;
+
 /// Migration version tracking table
 const MIGRATION_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -612,6 +614,141 @@ CREATE TABLE chapter_read_marks (
 );
 "#;
 
+const MIGRATION_V32: &str = r#"
+CREATE TABLE sync_clock(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL);
+INSERT INTO sync_clock VALUES(1,1);
+CREATE TABLE sync_versions(
+    kind TEXT NOT NULL, resource_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL, PRIMARY KEY(kind,resource_id,user_id)
+);
+INSERT INTO sync_versions SELECT 'content',id,'',1 FROM books;
+INSERT INTO sync_versions VALUES('catalog','','',1);
+CREATE TABLE progress_heads(
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    revision INTEGER NOT NULL DEFAULT 0,
+    device_id TEXT,
+    progress_id TEXT,
+    PRIMARY KEY(user_id,book_id)
+);
+INSERT INTO progress_heads(user_id,book_id,revision,progress_id)
+SELECT user_id,book_id,1,(SELECT latest.id FROM progress latest WHERE latest.user_id=p.user_id AND latest.book_id=p.book_id ORDER BY updated_at DESC,id DESC LIMIT 1)
+FROM progress p GROUP BY user_id,book_id;
+CREATE INDEX idx_sync_versions_user_kind ON sync_versions(user_id,kind,revision);
+CREATE TRIGGER sync_progress_delete AFTER DELETE ON progress
+WHEN EXISTS(SELECT 1 FROM users WHERE id=OLD.user_id) AND EXISTS(SELECT 1 FROM books WHERE id=OLD.book_id)
+BEGIN
+    INSERT INTO progress_heads(user_id,book_id,revision) VALUES(OLD.user_id,OLD.book_id,1)
+    ON CONFLICT(user_id,book_id) DO UPDATE SET revision=revision+1,
+        progress_id=CASE WHEN progress_id=OLD.id THEN NULL ELSE progress_id END;
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('reading',OLD.book_id,OLD.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_books_insert AFTER INSERT ON books BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('content',NEW.id,'',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+    INSERT INTO sync_versions VALUES('catalog','','',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_books_update AFTER UPDATE ON books BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('content',NEW.id,'',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+    INSERT INTO sync_versions VALUES('catalog','','',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_books_delete AFTER DELETE ON books BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('content',OLD.id,'',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+    INSERT INTO sync_versions VALUES('catalog','','',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_chapters_insert AFTER INSERT ON chapters BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('content',NEW.book_id,'',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+    INSERT INTO sync_versions VALUES('catalog','','',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_chapters_update AFTER UPDATE ON chapters BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('content',NEW.book_id,'',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+    INSERT INTO sync_versions VALUES('catalog','','',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_chapters_delete AFTER DELETE ON chapters BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('content',OLD.book_id,'',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+    INSERT INTO sync_versions VALUES('catalog','','',(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_chapter_read_marks_insert AFTER INSERT ON chapter_read_marks BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('reading',NEW.book_id,NEW.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_chapter_read_marks_update AFTER UPDATE ON chapter_read_marks BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('reading',NEW.book_id,NEW.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_chapter_read_marks_delete AFTER DELETE ON chapter_read_marks BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('reading',OLD.book_id,OLD.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_book_read_marks_insert AFTER INSERT ON book_read_marks BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('reading',NEW.book_id,NEW.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_book_read_marks_update AFTER UPDATE ON book_read_marks BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('reading',NEW.book_id,NEW.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_book_read_marks_delete AFTER DELETE ON book_read_marks BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('reading',OLD.book_id,OLD.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_bookmarks_insert AFTER INSERT ON bookmarks BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('reading',NEW.book_id,NEW.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_bookmarks_update AFTER UPDATE ON bookmarks BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('reading',NEW.book_id,NEW.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_bookmarks_delete AFTER DELETE ON bookmarks BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('reading',OLD.book_id,OLD.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_user_settings_insert AFTER INSERT ON user_settings BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('settings','',NEW.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_user_settings_update AFTER UPDATE ON user_settings BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('settings','',NEW.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+CREATE TRIGGER sync_user_settings_delete AFTER DELETE ON user_settings BEGIN
+    UPDATE sync_clock SET revision=revision+1 WHERE id=1;
+    INSERT INTO sync_versions VALUES('settings','',OLD.user_id,(SELECT revision FROM sync_clock WHERE id=1))
+    ON CONFLICT(kind,resource_id,user_id) DO UPDATE SET revision=excluded.revision;
+END;
+"#;
+
 /// Run all pending database migrations
 ///
 /// This function applies database schema migrations in order.
@@ -826,6 +963,9 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     if current_version < 31 {
         apply_migration(conn, 31, MIGRATION_V31)?;
     }
+    if current_version < 32 {
+        apply_migration(conn, 32, MIGRATION_V32)?;
+    }
 
     info!("Database migrations completed successfully");
     Ok(())
@@ -882,15 +1022,15 @@ fn create_migration_backup(db_path: &Path) -> Result<PathBuf> {
 
     let backup_path = backup_dir.join(format!("migration_backup_{}.db", timestamp));
 
-    // Copy database file
-    fs::copy(db_path, &backup_path).map_err(TingError::IoError)?;
+    // 使用 SQLite 备份接口同时包含 WAL 中已提交的数据。
+    crate::db::backup::copy_database(db_path, &backup_path)?;
 
     Ok(backup_path)
 }
 
 /// Restore database from backup
 fn restore_from_backup(backup_path: &Path, db_path: &Path) -> Result<()> {
-    fs::copy(backup_path, db_path).map_err(TingError::IoError)?;
+    crate::db::backup::copy_database(backup_path, db_path)?;
 
     Ok(())
 }

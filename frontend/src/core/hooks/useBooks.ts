@@ -209,10 +209,18 @@ export const useBookDetails = (id: string | undefined, entryChapterId: string | 
   const reloadBook = async () => {
     const operations = operationsRef.current;
     if (!operations || !id) return;
-    const updated = await operations.book(id);
+    const details = await operations.details(id);
     if (operationsRef.current !== operations) return;
+    const updated = details.book;
     setBook(updated);
+    setBookProgress(details.progress);
     setIsFavorite(!!updated.is_favorite);
+    const orders = readChapterGroupOrders(details.settings);
+    const order = findChapterGroupOrder(orders, id) ?? (updated.library_type === 'rss' ? 'desc' : 'asc');
+    setChapterGroupOrders(orders);
+    setChapterGroupsDescending(order === 'desc');
+    setChapterAscending(order === 'asc');
+    setCoverShape(details.settings.bookshelf_cover_shape === 'rect' ? 'rect' : 'square');
     invalidateChapters();
     await fetchChapterPage();
   };

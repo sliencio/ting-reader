@@ -6,6 +6,7 @@
 //! - Database migrations
 //! - Data models and schemas
 
+pub mod backup;
 pub mod manager;
 pub mod migrations;
 pub mod models;

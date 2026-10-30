@@ -17,6 +17,8 @@ import { getPinyinInitial } from '../../core/utils/pinyin';
 import { localeCompare } from '../../core/utils/locale';
 import { publishBookshelfCoverShape } from '../../core/hooks/useBookshelfCoverShape';
 import BookshelfListItem from './BookshelfListItem';
+import { useServerRefresh } from '../../core/hooks/useServerChanges';
+import { invalidateBookCover } from '../../core/utils/image';
 
 const BookshelfPage: React.FC = () => {
   const bookOperations = useBookOperations();
@@ -175,12 +177,15 @@ const BookshelfPage: React.FC = () => {
     apiClient.post('/api/settings', { bookshelf_view_mode: newMode });
   };
 
-  const fetchData = async () => {
-    setLoading(true);
+  const shelfRequest = React.useRef(0);
+  const fetchData = async (background=false) => {
+    const request=++shelfRequest.current;
+    if (!background) setLoading(true);
     try {
       // 1. Fetch Libraries first
       const libsRes = await apiClient.get('/api/libraries');
       const libs = libsRes.data;
+      if (request!==shelfRequest.current) return;
       setLibraries(libs);
 
       // 2. Determine effective library ID
@@ -203,14 +208,20 @@ const BookshelfPage: React.FC = () => {
         apiClient.get('/api/books', { params: { library_id: effectiveLibraryId || undefined } }),
         apiClient.get('/api/v1/series', { params: { library_id: effectiveLibraryId || undefined } })
       ]);
+      if (request!==shelfRequest.current) return;
       setBooks(booksRes.data);
       setSeries(seriesRes.data);
     } catch (err) {
       console.error('Failed to fetch bookshelf data', err);
     } finally {
-      setLoading(false);
+      if (request===shelfRequest.current) setLoading(false);
     }
   };
+
+  useServerRefresh(async notice=>{
+    if (notice.content) books.forEach(book=>invalidateBookCover(book.id));
+    await fetchData(true);
+  });
 
   useEffect(() => {
     if (settingsLoaded) {

@@ -30,6 +30,17 @@ pub async fn get_book_chapters(
     }
 
     let chapter_repo = ChapterRepository::new(state.book_repo.db().clone());
+    if !state
+        .book_repo
+        .check_access(&book_id, &user.id, user.role == "admin")
+        .await?
+    {
+        return Err(TingError::permission(
+            crate::core::app::error::AccessErrorKind::ResourceDenied,
+            "book.chapters",
+            "无权访问这本书的章节".into(),
+        ));
+    }
     let read_marks =
         crate::db::repository::reading::ReadingRepository::new(state.book_repo.db().clone())
             .chapter_read_marks(&user.id, &book_id)

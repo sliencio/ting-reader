@@ -16,6 +16,7 @@ const hiddenMiniPlayerPathPrefixes = [
   '/settings',
   '/plugin-pages',
   '/cache',
+  '/maintenance',
   '/personalization',
   '/notifications',
   '/statistics',

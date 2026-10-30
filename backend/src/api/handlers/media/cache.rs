@@ -96,10 +96,17 @@ pub async fn cache_chapter(
         tokio::io::copy(&mut reader, &mut file).await?;
         tokio::fs::rename(&temp_path, &cache_path).await?;
 
+        let policy = crate::core::maintenance::load_settings(&state.system_settings_repo).await?;
         let config = state.config.read().await;
         let _ = state
             .cache_manager
-            .enforce_limits(50, config.storage.max_disk_usage)
+            .enforce_limits(
+                policy.disk_cache_chapters,
+                policy
+                    .disk_cache_mib
+                    .map(|value| value as u64 * 1024 * 1024)
+                    .unwrap_or(config.storage.max_disk_usage),
+            )
             .await;
 
         state

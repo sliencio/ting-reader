@@ -575,21 +575,40 @@ pub async fn get_book_progress(
     Path(book_id): Path<String>,
     user: crate::auth::middleware::AuthUser,
 ) -> Result<impl IntoResponse> {
-    match state
-        .progress_repo
-        .get_by_book_enriched(&user.id, &book_id)
+    if !state
+        .book_repo
+        .check_access(&book_id, &user.id, user.role == "admin")
         .await?
     {
-        Some((progress, chapter_title, chapter_duration)) => {
+        return Err(TingError::permission(
+            AccessErrorKind::ResourceDenied,
+            "get_book_progress::permission",
+            "无权读取这本书的进度".into(),
+        ));
+    }
+    let (snapshot, revision) = state.progress_repo.snapshot(&user.id, &book_id).await?;
+    match snapshot {
+        Some(progress) => {
+            let chapter = if let Some(id) = progress.chapter_id.as_deref() {
+                state.chapter_repo.find_by_id(id).await?
+            } else {
+                None
+            };
             let mut response = ProgressResponse::from(progress);
-            response.chapter_title = chapter_title;
-            response.chapter_duration = chapter_duration;
-            Ok(Json(response))
+            response.chapter_title = chapter.as_ref().and_then(|item| item.title.clone());
+            response.chapter_duration = chapter.and_then(|item| item.duration);
+            let mut value = serde_json::to_value(response).map_err(|e| {
+                TingError::serialization(
+                    crate::core::app::error::CodecErrorKind::InvalidData,
+                    "progress.response",
+                    e.to_string(),
+                )
+            })?;
+            value["revision"] = revision.into();
+            Ok(Json(value))
         }
-        None => Err(TingError::not_found(
-            LookupErrorKind::Book,
-            "get_book_progress::not_found",
-            format!("Progress not found for book {}", book_id),
+        None => Ok(Json(
+            serde_json::json!({"book_id":book_id,"revision":revision,"position":0}),
         )),
     }
 }
@@ -625,6 +644,11 @@ pub async fn update_progress(
     }
     if !req.position.is_finite()
         || req.position < 0.0
+        || req.base_revision.is_some_and(|value| value < 0)
+        || req
+            .device_id
+            .as_ref()
+            .is_some_and(|value| value.len() > 128)
         || req
             .duration
             .is_some_and(|value| !value.is_finite() || value < 0.0)
@@ -667,7 +691,18 @@ pub async fn update_progress(
         updated_at: chrono::Utc::now().to_rfc3339(),
     };
 
-    state.progress_repo.upsert(&progress).await?;
+    let Some(revision) = state
+        .progress_repo
+        .upsert_checked(&progress, req.base_revision, req.device_id.clone())
+        .await?
+    else {
+        let (current, revision) = state.progress_repo.snapshot(&user.id, &req.book_id).await?;
+        let mut current = current
+            .map(|item| serde_json::json!(item))
+            .unwrap_or_else(|| serde_json::json!({"book_id":req.book_id,"position":0}));
+        current["revision"] = revision.into();
+        return Ok((StatusCode::CONFLICT, Json(serde_json::json!({"code":"PROGRESS_CONFLICT","message":"其他设备已更新进度，请选择续播位置","current":current}))).into_response());
+    };
 
     if let Some(playback_start) = req.playback_start {
         crate::api::handlers::media::audit::record_playback_start(
@@ -680,5 +715,8 @@ pub async fn update_progress(
         .await;
     }
 
-    Ok((StatusCode::OK, Json(ProgressResponse::from(progress))))
+    state.ws_manager.broadcast(&user.id, &serde_json::json!({"type":"progress_updated","book_id":req.book_id,"chapter_id":req.chapter_id,"position":req.position,"updated_at":progress.updated_at,"revision":revision,"device_id":req.device_id}).to_string()).await;
+    let mut value = serde_json::json!(ProgressResponse::from(progress));
+    value["revision"] = revision.into();
+    Ok((StatusCode::OK, Json(value)).into_response())
 }

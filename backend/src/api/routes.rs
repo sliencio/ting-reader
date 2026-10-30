@@ -11,11 +11,13 @@ use crate::api::handlers::{
     apply_scrape_result,
     batch_delete_tasks,
     batch_update_chapters,
+    book_revision,
     bookmark_books,
     // Cache management
     cache_chapter,
     call_plugin_route,
     call_public_plugin_route,
+    cancel_restore,
     cancel_task,
     check_update,
     clear_all_caches,
@@ -23,12 +25,14 @@ use crate::api::handlers::{
     clear_recent_progress,
     clear_system_logs,
     clear_tasks,
+    create_backup,
     create_book,
     create_library,
     create_notification_webhook,
     create_playlist,
     create_series,
     create_user,
+    delete_backup,
     delete_book,
     delete_bookmark,
     delete_chapter_cache,
@@ -39,6 +43,9 @@ use crate::api::handlers::{
     delete_series,
     delete_task,
     delete_user,
+    diagnose_library,
+    diagnostics,
+    download_backup,
     edit_bookmark,
     export_all_plugin_logs,
     export_plugin_logs,
@@ -58,6 +65,7 @@ use crate::api::handlers::{
     get_config,
     // Favorites management
     get_favorites,
+    get_maintenance,
     get_metrics,
     get_playlist,
     get_plugin_asset,
@@ -82,10 +90,12 @@ use crate::api::handlers::{
     history_books,
     history_chapters,
     history_summary,
+    import_backup,
     install_plugin,
     install_store_plugin,
     invoke_plugin_capability,
     invoke_plugin_host,
+    list_backups,
     list_bookmarks,
     list_books,
     list_libraries,
@@ -108,6 +118,7 @@ use crate::api::handlers::{
     proxy_cover,
     reload_plugin,
     remove_favorite,
+    restore_backup,
     scan_library,
     scrape_book_diff,
     scraper_search,
@@ -115,6 +126,7 @@ use crate::api::handlers::{
     // Audio streaming
     sign_plugin_route,
     stream_chapter,
+    sync_state,
     test_notification_webhook,
     test_webdav_connection,
     uninstall_plugin,
@@ -123,6 +135,7 @@ use crate::api::handlers::{
     update_chapter,
     update_config,
     update_library,
+    update_maintenance,
     update_notification_webhook,
     update_playlist,
     update_plugin_config,
@@ -216,6 +229,31 @@ pub fn build_api_routes(state: AppState) -> Router {
         .route("/api/progress/recent/delete", post(delete_progress_history))
         .route("/api/progress/:bookId", get(get_book_progress))
         .route("/api/progress", post(update_progress))
+        .route("/api/sync/state", get(sync_state))
+        .route("/api/books/:id/revision", get(book_revision))
+        .route(
+            "/api/system/maintenance",
+            get(get_maintenance).put(update_maintenance),
+        )
+        .route("/api/system/backups", get(list_backups).post(create_backup))
+        .route(
+            "/api/system/backups/import",
+            post(import_backup).layer(DefaultBodyLimit::max(513 * 1024 * 1024)),
+        )
+        .route(
+            "/api/system/backups/pending-restore",
+            axum::routing::delete(cancel_restore),
+        )
+        .route(
+            "/api/system/backups/:id",
+            get(download_backup).delete(delete_backup),
+        )
+        .route("/api/system/backups/:id/restore", post(restore_backup))
+        .route("/api/system/diagnostics", get(diagnostics))
+        .route(
+            "/api/system/diagnostics/libraries/:id",
+            post(diagnose_library),
+        )
         .route("/api/books/read-status", post(mark_books))
         .route("/api/books/:id/chapters/read-status", post(mark_chapters))
         .route("/api/history/books", get(history_books))

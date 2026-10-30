@@ -172,6 +172,8 @@ curl -fsSL https://www.tingreader.cn/uninstall.sh | bash
 
 本分支的镜像发布到 **`ghcr.io/sliencio/ting-reader`**，支持 amd64、arm64。使用仓库中的 `docker-compose.ghcr.yml` 部署，安装、更新和首次公开镜像的说明见 [Docker 部署文档](docs/DOCKER.md)。本分支来源于 [dqsq2e2/ting-reader](https://github.com/dqsq2e2/ting-reader)，感谢原作者及贡献者。
 
+正在开发的备份恢复、缓存策略、故障诊断及多端进度版本保护见 [服务端维护说明](docs/MAINTENANCE.md)，功能随下一版本提供。
+
 创建 `docker-compose.yml` 文件：
 
 ```yaml

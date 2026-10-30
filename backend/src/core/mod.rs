@@ -16,6 +16,7 @@ pub mod books;
 pub mod common;
 pub mod event_bus;
 pub mod library_scanner;
+pub mod maintenance;
 pub mod notifications;
 pub mod security;
 pub mod storage;

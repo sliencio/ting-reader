@@ -6,7 +6,6 @@ use crate::api::models::{
 };
 use crate::api::state::AppState;
 use crate::core::app::error::Result;
-use crate::db::repository::Repository;
 use axum::{Json, extract::State, response::IntoResponse};
 use chrono::Utc;
 
@@ -37,7 +36,15 @@ pub async fn health_check(State(state): State<AppState>) -> Result<impl IntoResp
 }
 
 async fn check_database_health(state: &AppState) -> ComponentHealth {
-    match state.book_repo.find_all().await {
+    match state
+        .book_repo
+        .db()
+        .execute(|conn| {
+            conn.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+            Ok(())
+        })
+        .await
+    {
         Ok(_) => ComponentHealth {
             status: ComponentStatus::Healthy,
             message: Some("Database is operational".to_string()),

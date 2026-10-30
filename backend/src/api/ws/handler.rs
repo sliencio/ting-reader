@@ -35,6 +35,8 @@ enum ClientMessage {
         chapter_id: Option<String>,
         position: f64,
         playback_start: Option<f64>,
+        base_revision: Option<i64>,
+        device_id: Option<String>,
     },
     #[serde(rename = "ping")]
     Ping,
@@ -50,6 +52,8 @@ enum ServerMessage {
         chapter_id: Option<String>,
         position: f64,
         updated_at: String,
+        revision: i64,
+        device_id: Option<String>,
     },
     #[serde(rename = "pong")]
     Pong,
@@ -205,7 +209,38 @@ async fn handle_client_message(
             chapter_id,
             position,
             playback_start,
+            base_revision,
+            device_id,
         } => {
+            let user = state.user_repo.find_by_id(user_id).await.ok().flatten();
+            let allowed = match user.as_ref() {
+                Some(user) => state
+                    .book_repo
+                    .check_access(&book_id, user_id, user.role == "admin")
+                    .await
+                    .unwrap_or(false),
+                None => false,
+            };
+            let chapter_valid = match chapter_id.as_deref() {
+                Some(id) => state
+                    .chapter_repo
+                    .find_by_id(id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|chapter| chapter.book_id == book_id),
+                None => true,
+            };
+            if !allowed
+                || !chapter_valid
+                || !position.is_finite()
+                || position < 0.0
+                || base_revision.is_some_and(|value| value < 0)
+                || device_id.as_ref().is_some_and(|value| value.len() > 128)
+            {
+                ws_manager.broadcast(user_id,&serde_json::json!({"type":"error","code":"INVALID_PROGRESS","message":"无权访问或进度参数无效"}).to_string()).await;
+                return;
+            }
             // Save progress to database
             let progress = Progress {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -225,7 +260,11 @@ async fn handle_client_message(
                 position
             );
 
-            if let Err(e) = state.progress_repo.upsert(&progress).await {
+            let saved = state
+                .progress_repo
+                .upsert_checked(&progress, base_revision, device_id.clone())
+                .await;
+            if let Err(e) = &saved {
                 warn!(
                     user_id = %user_id,
                     error = %e,
@@ -237,12 +276,24 @@ async fn handle_client_message(
                     "WebSocket progress save failed"
                 );
                 if let Ok(error) = serde_json::to_string(&ServerMessage::Error {
-                    error: ErrorResponse::from_error(&e),
+                    error: ErrorResponse::from_error(e),
                 }) {
                     ws_manager.broadcast(user_id, &error).await;
                 }
                 return;
             }
+            let Some(revision) = saved.ok().flatten() else {
+                if let Ok((current, revision)) =
+                    state.progress_repo.snapshot(user_id, &book_id).await
+                {
+                    let mut current = current
+                        .map(|p| serde_json::json!(p))
+                        .unwrap_or_else(|| serde_json::json!({"book_id":book_id,"position":0}));
+                    current["revision"] = revision.into();
+                    ws_manager.broadcast(user_id,&serde_json::json!({"type":"progress_conflict","book_id":book_id,"device_id":device_id,"current":current}).to_string()).await;
+                }
+                return;
+            };
 
             if let Some(playback_start) = playback_start {
                 crate::api::handlers::media::audit::record_playback_start(
@@ -261,6 +312,8 @@ async fn handle_client_message(
                 chapter_id,
                 position,
                 updated_at: progress.updated_at,
+                revision,
+                device_id,
             })
             .unwrap_or_default();
 

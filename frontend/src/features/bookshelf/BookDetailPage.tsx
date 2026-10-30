@@ -20,6 +20,8 @@ import BookHeaderSection from './bookDetail/BookHeaderSection';
 import ChapterListSection from './bookDetail/ChapterListSection';
 import { useBookDetails } from '../../core/hooks/useBooks';
 import type { ChapterGroupOrder, RegexGenerationResult } from '../../core/api/books';
+import { useServerRefresh } from '../../core/hooks/useServerChanges';
+import { invalidateBookCover } from '../../core/utils/image';
 
 const BookDetailPage: React.FC = () => {
   const { t } = useTranslation();
@@ -35,6 +37,7 @@ const BookDetailPage: React.FC = () => {
     fetchChapterPage, fetchAllChaptersForPlayback, invalidateChapters,
     operationsRef, toggleFavorite: saveFavorite, reloadBook, saveBook,
   } = useBookDetails(id, entryChapterId);
+  useServerRefresh(async notice => { if (notice.content && id) invalidateBookCover(id); await reloadBook(); });
   const chapterScrollTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => () => clearTimeout(chapterScrollTimer.current), [id]);
 

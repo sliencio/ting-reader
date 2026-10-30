@@ -333,8 +333,60 @@ impl ProgressRepository {
 
     /// Upsert progress (insert or update)
     pub async fn upsert(&self, progress: &Progress) -> Result<()> {
+        self.upsert_checked(progress, None, None).await?;
+        Ok(())
+    }
+
+    pub async fn snapshot(&self, user: &str, book: &str) -> Result<(Option<Progress>, i64)> {
+        let user = user.to_owned();
+        let book = book.to_owned();
+        self.db
+            .execute(move |conn| {
+                let result = conn
+                    .query_row(
+                        "SELECT p.id,p.chapter_id,p.position,p.duration,p.updated_at,h.revision
+                 FROM progress_heads h LEFT JOIN progress p ON p.id=COALESCE(h.progress_id,(
+                    SELECT id FROM progress WHERE user_id=h.user_id AND book_id=h.book_id
+                    ORDER BY updated_at DESC,id DESC LIMIT 1))
+                 WHERE h.user_id=?1 AND h.book_id=?2",
+                        [&user, &book],
+                        |row| {
+                            let id: Option<String> = row.get(0)?;
+                            let progress = if let Some(id) = id {
+                                Some(Progress {
+                                    id,
+                                    user_id: user.clone(),
+                                    book_id: book.clone(),
+                                    chapter_id: row.get(1)?,
+                                    position: row.get(2)?,
+                                    duration: row.get(3)?,
+                                    updated_at: row.get(4)?,
+                                })
+                            } else {
+                                None
+                            };
+                            Ok((progress, row.get(5)?))
+                        },
+                    )
+                    .optional()?;
+                Ok(result.unwrap_or((None, 0)))
+            })
+            .await
+    }
+
+    pub async fn upsert_checked(
+        &self,
+        progress: &Progress,
+        expected: Option<i64>,
+        device: Option<String>,
+    ) -> Result<Option<i64>> {
         let progress = progress.clone();
-        self.db.transaction(move |conn| {
+        self.db.transaction_immediate(move |conn| {
+            let revision: i64 = conn.query_row(
+                "SELECT COALESCE((SELECT revision FROM progress_heads WHERE user_id=?1 AND book_id=?2),0)",
+                [&progress.user_id,&progress.book_id], |row| row.get(0),
+            )?;
+            if expected.is_some_and(|value| value != revision) { return Ok(None); }
             let progress_position: Option<f64> = if progress.chapter_id.is_none() {
                 conn.query_row(
                     "SELECT position FROM progress WHERE user_id = ? AND book_id = ? AND chapter_id IS NULL",
@@ -475,7 +527,13 @@ impl ProgressRepository {
                     ],
                 ).map_err(TingError::DatabaseError)?;
             }
-            Ok(())
+            conn.execute(
+                "INSERT INTO progress_heads(user_id,book_id,revision,device_id,progress_id)
+                 VALUES(?1,?2,?3,?4,(SELECT id FROM progress WHERE user_id=?1 AND book_id=?2 AND chapter_id IS ?5 LIMIT 1))
+                 ON CONFLICT(user_id,book_id) DO UPDATE SET revision=excluded.revision,device_id=excluded.device_id,progress_id=excluded.progress_id",
+                rusqlite::params![progress.user_id,progress.book_id,revision+1,device,progress.chapter_id],
+            )?;
+            Ok(Some(revision+1))
         }).await
     }
 }

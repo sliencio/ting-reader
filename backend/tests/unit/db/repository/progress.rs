@@ -42,6 +42,79 @@ fn progress(id: &str, position: f64) -> Progress {
 }
 
 #[tokio::test]
+async fn compare_and_swap_rejects_stale_writes_without_counting_listening() {
+    let (db, repository) = create_repository().await;
+    assert_eq!(
+        repository
+            .upsert_checked(&progress("first", 10.0), Some(0), Some("phone".into()))
+            .await
+            .unwrap(),
+        Some(1)
+    );
+    let desktop = progress("second", 20.0);
+    let phone = progress("third", 30.0);
+    let (first, second) = tokio::join!(
+        repository.upsert_checked(&desktop, Some(1), Some("desktop".into())),
+        repository.upsert_checked(&phone, Some(1), Some("phone".into())),
+    );
+    let accepted = [first.unwrap(), second.unwrap()];
+    assert_eq!(accepted.iter().filter(|value| value.is_some()).count(), 1);
+    let (saved, revision) = repository.snapshot("user-1", "book-1").await.unwrap();
+    assert_eq!(revision, 2);
+    let saved = saved.unwrap();
+    let seconds: f64 = db
+        .execute(|conn| {
+            Ok(conn.query_row(
+                "SELECT SUM(listen_seconds) FROM listening_totals",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(seconds, saved.position);
+    assert_eq!(
+        repository
+            .upsert_checked(&progress("stale", 99.0), Some(0), None)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_eq!(repository.snapshot("user-1", "book-1").await.unwrap().1, 2);
+}
+
+#[tokio::test]
+async fn clearing_progress_invalidates_old_revision_and_preserves_book_deletion() {
+    let (db, repository) = create_repository().await;
+    repository
+        .upsert_checked(&progress("first", 10.0), Some(0), None)
+        .await
+        .unwrap();
+    db.execute(|conn| {
+        conn.execute("DELETE FROM progress", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let (saved, revision) = repository.snapshot("user-1", "book-1").await.unwrap();
+    assert!(saved.is_none());
+    assert_eq!(revision, 2);
+    assert_eq!(
+        repository
+            .upsert_checked(&progress("stale", 30.0), Some(1), None)
+            .await
+            .unwrap(),
+        None
+    );
+    db.execute(|conn| {
+        conn.execute("DELETE FROM books", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn repeated_heartbeats_keep_one_daily_activity_record() {
     let (db, repository) = create_repository().await;
 

@@ -5,9 +5,12 @@ use crate::db::models::{Book, Chapter, Library};
 use ting_plugin_contract::format::FormatOperation;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
+#[cfg(test)]
 const PRELOAD_WINDOW_BYTES: usize = 4 * 1024 * 1024;
 const PRELOAD_READ_BYTES: usize = 64 * 1024;
+#[cfg(test)]
 const MAX_CACHE_BYTES: usize = 32 * 1024 * 1024;
+#[cfg(test)]
 const CACHE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const MAX_CONCURRENT_PRELOADS: usize = 4;
 
@@ -151,6 +154,7 @@ async fn preload_chapter(
     auto_preload: bool,
     auto_cache: bool,
 ) -> crate::core::app::error::Result<()> {
+    let policy = crate::core::maintenance::load_settings(&state.system_settings_repo).await?;
     // Format extensions may cache ciphertext or require a streaming transform.
     // Only prefetch raw bytes for formats served directly by the core.
     let auto_preload = auto_preload
@@ -178,7 +182,10 @@ async fn preload_chapter(
                 cache_path.with_extension(format!("preload-{}.tmp", uuid::Uuid::new_v4()));
             let temporary = TemporaryCacheFile(temp_path.clone());
             let mut writer = tokio::fs::File::create(&temp_path).await?;
-            let disk_limit = state.config.read().await.storage.max_disk_usage;
+            let disk_limit = policy
+                .disk_cache_mib
+                .map(|value| value as u64 * 1024 * 1024)
+                .unwrap_or(state.config.read().await.storage.max_disk_usage);
             let written =
                 tokio::io::copy(&mut reader.take(disk_limit.saturating_add(1)), &mut writer)
                     .await?;
@@ -196,7 +203,13 @@ async fn preload_chapter(
             let config = state.config.read().await;
             state
                 .cache_manager
-                .enforce_limits(50, config.storage.max_disk_usage)
+                .enforce_limits(
+                    policy.disk_cache_chapters,
+                    policy
+                        .disk_cache_mib
+                        .map(|value| value as u64 * 1024 * 1024)
+                        .unwrap_or(config.storage.max_disk_usage),
+                )
                 .await
                 .map_err(|error| {
                     crate::core::app::error::TingError::IoError(std::io::Error::other(
@@ -207,28 +220,36 @@ async fn preload_chapter(
         if auto_preload {
             let file = tokio::fs::File::open(&cache_path).await?;
             let size = file.metadata().await?.len();
-            let entry = read_preload_prefix(file, size).await?;
-            insert_preload(state, chapter.id.clone(), entry).await;
+            let entry =
+                read_preload_prefix_with_limit(file, size, policy.preload_window_mib * 1024 * 1024)
+                    .await?;
+            insert_preload(state, chapter.id.clone(), entry, &policy).await;
         }
     } else if auto_preload {
         let (reader, reported_size) = chapter_reader(state, library, chapter).await?;
-        let entry = read_preload_prefix(reader, reported_size).await?;
-        insert_preload(state, chapter.id.clone(), entry).await;
+        let entry = read_preload_prefix_with_limit(
+            reader,
+            reported_size,
+            policy.preload_window_mib * 1024 * 1024,
+        )
+        .await?;
+        insert_preload(state, chapter.id.clone(), entry, &policy).await;
     }
     Ok(())
 }
 
-async fn read_preload_prefix(
+async fn read_preload_prefix_with_limit(
     mut reader: impl AsyncRead + Unpin,
     reported_size: u64,
+    window_bytes: usize,
 ) -> std::io::Result<PreloadedChapter> {
     let mut total_size = (reported_size > 0).then_some(reported_size);
     // An anonymous map releases its pages when the final Bytes owner drops,
     // including on cancellation. Large Vec allocations can remain in allocator
     // arenas after eviction and keep process RSS high across chapter switches.
     let limit = total_size
-        .unwrap_or(PRELOAD_WINDOW_BYTES as u64)
-        .min(PRELOAD_WINDOW_BYTES as u64) as usize;
+        .unwrap_or(window_bytes as u64)
+        .min(window_bytes as u64) as usize;
     let mut data = memmap2::MmapMut::map_anon(limit)?;
     let mut length = 0;
     while length < data.len() {
@@ -290,21 +311,56 @@ async fn chapter_reader(
     }
 }
 
-async fn insert_preload(state: &AppState, chapter_id: String, entry: PreloadedChapter) {
-    if entry.data.len() > PRELOAD_WINDOW_BYTES {
+async fn insert_preload(
+    state: &AppState,
+    chapter_id: String,
+    entry: PreloadedChapter,
+    policy: &crate::core::maintenance::MaintenanceSettings,
+) {
+    if entry.data.len() > policy.preload_window_mib * 1024 * 1024 {
         return;
     }
     let mut cache = state.preload_cache.write().await;
-    insert_preload_cache(&mut cache, chapter_id, entry);
+    insert_preload_cache_with(
+        &mut cache,
+        chapter_id,
+        entry,
+        policy.preload_memory_mib * 1024 * 1024,
+        std::time::Duration::from_secs(policy.preload_idle_seconds),
+    );
+}
+
+static CACHE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CACHE_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) async fn cache_stats(state: &AppState) -> serde_json::Value {
+    let cache = state.preload_cache.read().await;
+    serde_json::json!({"entries":cache.len(),"bytes":cache.values().map(|item|item.data.len()).sum::<usize>(),
+        "hits":CACHE_HITS.load(std::sync::atomic::Ordering::Relaxed),"misses":CACHE_MISSES.load(std::sync::atomic::Ordering::Relaxed)})
 }
 
 pub(super) async fn cached_chapter(state: &AppState, chapter_id: &str) -> Option<PreloadedChapter> {
+    let policy = crate::core::maintenance::load_settings(&state.system_settings_repo)
+        .await
+        .ok()?;
     let mut cache = state.preload_cache.write().await;
     let now = std::time::Instant::now();
-    evict_expired_cache(&mut cache, now);
-    let entry = cache.get_mut(chapter_id)?;
-    entry.last_access = now;
-    Some(entry.clone())
+    evict_expired_cache_with(
+        &mut cache,
+        now,
+        std::time::Duration::from_secs(policy.preload_idle_seconds),
+    );
+    match cache.get_mut(chapter_id) {
+        Some(entry) => {
+            CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            entry.last_access = now;
+            Some(entry.clone())
+        }
+        None => {
+            CACHE_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
+    }
 }
 
 pub(super) fn prefix_response<F, Fut>(
@@ -410,22 +466,28 @@ where
     Ok(Some(response))
 }
 
-pub(crate) fn evict_expired_cache(
+pub(crate) fn evict_expired_cache_with(
     cache: &mut std::collections::HashMap<String, PreloadedChapter>,
     now: std::time::Instant,
+    idle: std::time::Duration,
 ) {
-    cache.retain(|_, entry| now.duration_since(entry.last_access) < CACHE_IDLE_TIMEOUT);
+    cache.retain(|_, entry| now.duration_since(entry.last_access) < idle);
 }
 
-fn insert_preload_cache(
+fn insert_preload_cache_with(
     cache: &mut std::collections::HashMap<String, PreloadedChapter>,
     chapter_id: String,
     entry: PreloadedChapter,
+    max_bytes: usize,
+    idle: std::time::Duration,
 ) {
-    evict_expired_cache(cache, std::time::Instant::now());
+    evict_expired_cache_with(cache, std::time::Instant::now(), idle);
+    if entry.data.len() > max_bytes {
+        return;
+    }
     cache.remove(&chapter_id);
     let mut size: usize = cache.values().map(|entry| entry.data.len()).sum();
-    while size + entry.data.len() > MAX_CACHE_BYTES {
+    while size + entry.data.len() > max_bytes {
         let Some(oldest) = cache
             .iter()
             .min_by_key(|(_, entry)| entry.last_access)
@@ -438,6 +500,37 @@ fn insert_preload_cache(
         }
     }
     cache.insert(chapter_id, entry);
+}
+
+#[cfg(test)]
+async fn read_preload_prefix(
+    reader: impl AsyncRead + Unpin,
+    reported_size: u64,
+) -> std::io::Result<PreloadedChapter> {
+    read_preload_prefix_with_limit(reader, reported_size, PRELOAD_WINDOW_BYTES).await
+}
+
+#[cfg(test)]
+fn evict_expired_cache(
+    cache: &mut std::collections::HashMap<String, PreloadedChapter>,
+    now: std::time::Instant,
+) {
+    evict_expired_cache_with(cache, now, CACHE_IDLE_TIMEOUT);
+}
+
+#[cfg(test)]
+fn insert_preload_cache(
+    cache: &mut std::collections::HashMap<String, PreloadedChapter>,
+    chapter_id: String,
+    entry: PreloadedChapter,
+) {
+    insert_preload_cache_with(
+        cache,
+        chapter_id,
+        entry,
+        MAX_CACHE_BYTES,
+        CACHE_IDLE_TIMEOUT,
+    );
 }
 
 #[cfg(test)]
