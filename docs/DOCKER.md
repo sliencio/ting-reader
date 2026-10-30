@@ -1,6 +1,6 @@
 # 本仓库 Docker 镜像
 
-镜像地址为 `ghcr.io/sliencio/ting-reader`，提供 `linux/amd64` 和 `linux/arm64`，Docker 会按主机架构选择对应镜像。`2.0.7` 等版本标签固定对应同名 Git 标签的源码，禁止覆盖；`latest` 跟随较新的已发布版本，补发旧版本不会将其回退。
+镜像地址为 `ghcr.io/sliencio/ting-reader`，提供 `linux/amd64` 和 `linux/arm64`，Docker 会按主机架构选择对应镜像。`2.0.8` 等版本标签固定对应同名 Git 标签的源码，禁止覆盖；`latest` 跟随较新的已发布版本，补发旧版本不会将其回退。
 
 首次成功发布后，仓库所有者需要在 [容器包设置](https://github.com/users/sliencio/packages/container/ting-reader/settings) 中将可见性设置为 Public，之后用户即可免登录拉取。发布使用 GitHub Actions 自带的 `GITHUB_TOKEN`，不需要配置 Docker Hub 密钥。
 
@@ -13,7 +13,7 @@ docker compose -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-默认使用固定版本 `2.0.7`，访问 `http://服务器地址:3000`。数据、插件、缓存和有声书分别保存在部署目录的 `data`、`plugins`、`temp`、`storage` 中。升级现有实例时继续使用原有数据目录和媒体挂载路径，先备份数据库。
+默认使用固定版本 `2.0.8`，访问 `http://服务器地址:3000`。数据、插件、缓存和有声书分别保存在部署目录的 `data`、`plugins`、`temp`、`storage` 中。升级现有实例时继续使用原有数据目录和媒体挂载路径，先备份数据库。
 
 更新至后续版本时，可修改 Compose 文件中的默认版本，或在同目录的 `.env` 中指定：
 
@@ -27,7 +27,7 @@ TING_READER_PORT=3000
 也可单独拉取指定版本：
 
 ```bash
-docker pull ghcr.io/sliencio/ting-reader:2.0.7
+docker pull ghcr.io/sliencio/ting-reader:2.0.8
 ```
 
 ## 发布流程
