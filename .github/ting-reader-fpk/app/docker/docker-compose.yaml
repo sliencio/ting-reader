@@ -1,6 +1,6 @@
 services:
   ting-reader-docker:
-    image: dqsq2e2/ting-reader:${TRIM_APPVER}
+    image: ghcr.io/sliencio/ting-reader:${TRIM_APPVER}
     container_name: ting-reader-docker
     ports:
       - "0.0.0.0:${wizard_port}:3000"

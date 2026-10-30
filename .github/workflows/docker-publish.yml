@@ -1,454 +1,219 @@
-name: Docker Build, Push and FPK Release
+name: Docker Build and Publish
 
 on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Existing release tag to rebuild from the selected source ref, e.g. v2.0.2'
+        description: '需要补发镜像的现有版本标签，例如 v2.0.7'
         type: string
-        default: ''
-      deployment_packages_only:
-        description: 'Rebuild and publish only frontend/backend deployment archives'
-        type: boolean
-        default: false
+        required: true
+  push:
+    tags:
+      - 'v*'
 
-env:
-  FNPACK_VERSION: "1.2.3"
-  FYGOPACK_VERSION: "1.2.3"
-  TING_PLUGIN_STORE_VERSION: "2.0.2"
-  FFMPEG_BUILD_VERSION: "8.1.2-2"
+permissions:
+  contents: read
+
+concurrency:
+  group: ghcr-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+      image: ${{ steps.source.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.release_tag || github.ref_name }}
+          fetch-depth: 0
+      - name: 核对标签与源码版本
+        id: source
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          VERSION="${RELEASE_TAG#v}"
+          SOURCE_VERSION="$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' backend/Cargo.toml)"
+          test "$SOURCE_VERSION" = "$VERSION"
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          test "$SOURCE_SHA" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
   quality:
+    needs: prepare
     uses: ./.github/workflows/quality.yml
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
     permissions:
       contents: read
 
-  prepare:
-    needs: quality
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.get_version.outputs.version }}
-      target: ${{ steps.get_version.outputs.target }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Resolve release context
-        id: get_version
-        env:
-          REQUESTED_TAG: ${{ inputs.release_tag }}
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$REQUESTED_TAG" ]; then
-            [[ "$REQUESTED_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-            git ls-remote --exit-code origin "refs/tags/$REQUESTED_TAG" >/dev/null
-            TARGET="formal"
-            VERSION="${REQUESTED_TAG#v}"
-          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TARGET="beta"
-            VERSION="beta"
-          elif [ "${{ github.ref_type }}" = "tag" ]; then
-            TARGET="formal"
-            VERSION="${GITHUB_REF_NAME#v}"
-          else
-            echo "Unsupported release trigger: ${{ github.event_name }} / ${{ github.ref_type }}"
-            exit 1
-          fi
-
-          if [ "$TARGET" = formal ]; then
-            SOURCE_VERSION="$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' backend/Cargo.toml)"
-            if [ "$SOURCE_VERSION" != "$VERSION" ]; then
-              echo "::error::Source version $SOURCE_VERSION does not match release version $VERSION"
-              exit 1
-            fi
-          fi
-
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "target=$TARGET" >> $GITHUB_OUTPUT
-          echo "Resolved $TARGET build for version $VERSION"
-          echo "Source commit: $(git rev-parse HEAD)"
-
   docker:
-    needs: prepare
-    if: inputs.deployment_packages_only != true
+    needs: [prepare, quality]
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - platform: linux/amd64
+          - arch: amd64
             runner: ubuntu-latest
-          - platform: linux/arm64
+          - arch: arm64
             runner: ubuntu-24.04-arm
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        if: github.event_name != 'pull_request'
+          ref: ${{ needs.prepare.outputs.source_sha }}
+      - uses: docker/setup-buildx-action@v3
+      - name: 登录本仓库 GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push by digest
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 构建并推送架构摘要
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: ${{ matrix.platform }}
-          build-args: |
-            TING_PLUGIN_STORE_VERSION=${{ env.TING_PLUGIN_STORE_VERSION }}
+          platforms: linux/${{ matrix.arch }}
           labels: |
-            org.opencontainers.image.revision=${{ github.sha }}
-          outputs: type=image,name=dqsq2e2/ting-reader,push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=build-${{ matrix.platform }}
-          cache-to: type=gha,mode=max,scope=build-${{ matrix.platform }}
-
-      - name: Export digest
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-${{ strategy.job-index }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  merge:
-    needs: [prepare, docker]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Download digests
-        uses: actions/download-artifact@v4
-        with:
-          path: /tmp/digests
-          pattern: digests-*
-          merge-multiple: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Create manifest list and push
-        working-directory: /tmp/digests
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-
-          if [ "${{ needs.prepare.outputs.target }}" = "beta" ]; then
-            echo "Building beta image..."
-            docker buildx imagetools create \
-              --tag dqsq2e2/ting-reader:beta \
-              $(printf 'dqsq2e2/ting-reader@sha256:%s ' *)
-          else
-            echo "Building release images for version $VERSION..."
-            docker buildx imagetools create \
-              --tag dqsq2e2/ting-reader:latest \
-              --tag dqsq2e2/ting-reader:$VERSION \
-              $(printf 'dqsq2e2/ting-reader@sha256:%s ' *)
-          fi
-
-      - name: Inspect image
-        run: |
-          if [ "${{ needs.prepare.outputs.target }}" = "beta" ]; then
-            docker buildx imagetools inspect dqsq2e2/ting-reader:beta
-          else
-            docker buildx imagetools inspect dqsq2e2/ting-reader:${{ needs.prepare.outputs.version }}
-          fi
-
-  frontend-package:
-    needs: prepare
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Build frontend package
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          npm ci --prefix frontend
-          npm run build --prefix frontend
-
-          mkdir -p package/static
-          cp -r frontend/dist/. package/static/
-          tar -C package -czf "ting-reader-frontend-${VERSION}.tar.gz" static
-
-      - name: Upload frontend packages
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-package
-          path: ting-reader-frontend-*.tar.gz
-          if-no-files-found: error
-          retention-days: 1
-
-  backend-package:
-    needs: prepare
-    runs-on: ${{ matrix.runner }}
-    container: rust:bookworm
-    permissions:
-      contents: read
-    strategy:
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            arch: amd64
-          - runner: ubuntu-24.04-arm
-            arch: arm64
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Install build dependencies
-        run: |
-          apt-get update
-          apt-get install -y cmake clang curl
-
-      - name: Build backend package
-        working-directory: backend
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          cargo build --release --locked
-
-          mkdir -p package
-          mkdir -p package/preinstalled-plugins
-          cp target/release/ting_reader package/ting-reader
-          cp config.toml package/config.toml
-          curl --fail --location --retry 3 \
-            "https://github.com/dqsq2e2/ting-reader-plugin-store/releases/download/v${TING_PLUGIN_STORE_VERSION}/ting-reader-plugin-store-${TING_PLUGIN_STORE_VERSION}.tr" \
-            --output package/preinstalled-plugins/ting-reader-plugin-store.tr
-          case "${{ matrix.arch }}" in
-            amd64)
-              FFMPEG_ARCH=x86_64
-              FFMPEG_SHA256=58246304b840d40f600e7a03673695061d51ee864b11b35dbaa0983aa6506bc6
-              ;;
-            arm64)
-              FFMPEG_ARCH=arm64
-              FFMPEG_SHA256=c12dca8818065a1ad04023eecec3d2d44542b9c1095f13eb9b028fd224ac3d28
-              ;;
-            *) exit 1 ;;
-          esac
-          FFMPEG_ROOT="ffmpeg-8.1.2-audio-encode-${FFMPEG_ARCH}-linux-gnu"
-          curl --fail --location --retry 3 \
-            "https://github.com/dqsq2e2/ffmpeg-build/releases/download/v${FFMPEG_BUILD_VERSION}/${FFMPEG_ROOT}.tar.gz" \
-            --output /tmp/ffmpeg.tar.gz
-          echo "${FFMPEG_SHA256}  /tmp/ffmpeg.tar.gz" | sha256sum --check --status
-          mkdir -p package/bin
-          tar -xzf /tmp/ffmpeg.tar.gz --strip-components=2 -C package/bin \
-            "${FFMPEG_ROOT}/bin/ffmpeg" "${FFMPEG_ROOT}/bin/ffprobe"
-          chmod 755 package/bin/ffmpeg package/bin/ffprobe
-          package/bin/ffmpeg -hide_banner -encoders | grep libmp3lame
-          package/bin/ffprobe -version
-          chmod +x package/ting-reader
-          tar -C package -czf "../ting-reader-backend-linux-${{ matrix.arch }}-${VERSION}.tar.gz" \
-            ting-reader config.toml preinstalled-plugins bin
-          tar -tzf "../ting-reader-backend-linux-${{ matrix.arch }}-${VERSION}.tar.gz" | grep '^bin/ffmpeg$'
-          tar -tzf "../ting-reader-backend-linux-${{ matrix.arch }}-${VERSION}.tar.gz" | grep '^bin/ffprobe$'
-
-      - name: Upload backend package
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-package-${{ matrix.arch }}
-          path: ting-reader-backend-linux-${{ matrix.arch }}-*.tar.gz
-          if-no-files-found: error
-          retention-days: 1
-
-  release:
-    needs: [prepare, merge, frontend-package, backend-package]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Download application packages
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          pattern: '*-package*'
-          merge-multiple: true
-
-      - name: Add deployment scripts
-        run: |
-          cp scripts/deploy.sh release-assets/deploy.sh
-          cp scripts/manage-libraries.sh release-assets/manage-libraries.sh
-          cp scripts/update.sh release-assets/update.sh
-          cp scripts/uninstall.sh release-assets/uninstall.sh
-          chmod +x release-assets/deploy.sh release-assets/manage-libraries.sh release-assets/update.sh release-assets/uninstall.sh
-
-      - name: Setup fnpack
-        uses: ./.github/actions/setup-fnpack
-        with:
-          version: ${{ env.FNPACK_VERSION }}
-
-      - name: Setup fygopack
-        uses: ./.github/actions/setup-fygopack
-        with:
-          version: ${{ env.FYGOPACK_VERSION }}
-
-      - name: Build FPK (Formal)
-        if: needs.prepare.outputs.target == 'formal'
-        run: |
-          VERSION="${{ needs.prepare.outputs.version }}"
-          cp .github/ting-reader-fpk/manifest .github/ting-reader-fpk/manifest.bak
-          sed -i "s/^version[[:space:]]*=.*/version = $VERSION/" .github/ting-reader-fpk/manifest
-
-          fnpack build --directory .github/ting-reader-fpk
-          mv ting-reader-docker.fpk ting-reader-$VERSION.fpk
-
-          # Keep backup of LICENSE and use English LICENSE for fygopack
-          cp .github/ting-reader-fpk/LICENSE .github/ting-reader-fpk/LICENSE.bak
-          cp .github/ting-reader-fpk/LICENSE.en .github/ting-reader-fpk/LICENSE
-
-          fygopack build --directory .github/ting-reader-fpk
-          mv ting-reader-docker.fpk ting-reader-fygo-$VERSION.fpk
-
-          # Restore Chinese LICENSE
-          mv .github/ting-reader-fpk/LICENSE.bak .github/ting-reader-fpk/LICENSE
-
-          mv .github/ting-reader-fpk/manifest.bak .github/ting-reader-fpk/manifest
-
-      - name: Build FPK (Beta)
-        if: needs.prepare.outputs.target == 'beta'
-        run: |
-          sed -i "s/^version[[:space:]]*=.*/version = beta/" .github/ting-reader-fpk/manifest
-
-          fnpack build --directory .github/ting-reader-fpk
-          mv ting-reader-docker.fpk ting-reader-beta.fpk
-
-          # Keep backup of LICENSE and use English LICENSE for fygopack
-          cp .github/ting-reader-fpk/LICENSE .github/ting-reader-fpk/LICENSE.bak
-          cp .github/ting-reader-fpk/LICENSE.en .github/ting-reader-fpk/LICENSE
-
-          fygopack build --directory .github/ting-reader-fpk
-          mv ting-reader-docker.fpk ting-reader-fygo-beta.fpk
-
-          # Restore Chinese LICENSE
-          mv .github/ting-reader-fpk/LICENSE.bak .github/ting-reader-fpk/LICENSE
-
-      - name: Update Beta Tag
-        if: needs.prepare.outputs.target == 'beta'
-        run: |
-          git config --local user.email "github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git tag -f beta
-          git push origin beta --force
-
-      - name: Release Beta FPK
-        uses: softprops/action-gh-release@v2
-        if: needs.prepare.outputs.target == 'beta'
-        with:
-          tag_name: beta
-          name: Beta Release
-          body: "Latest beta build of ting-reader FPK."
-          prerelease: true
-          make_latest: false
-          overwrite_files: true
-          files: |
-            ting-reader-beta.fpk
-            ting-reader-fygo-beta.fpk
-            release-assets/*
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ needs.prepare.outputs.source_sha }}
+          outputs: type=image,name=${{ needs.prepare.outputs.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=ghcr-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=ghcr-${{ matrix.arch }}
+      - name: 检查容器启动与媒体工具
+        timeout-minutes: 3
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Release Notes
-        id: extract_notes
-        if: needs.prepare.outputs.target == 'formal'
-        run: |
-          set -euo pipefail
-          VERSION="${{ needs.prepare.outputs.version }}"
-          awk -v header="## [${VERSION}]" '
-            index($0, header " - ") == 1 { found = 1; print; next }
-            found && /^## \[/ { exit }
-            found { print }
-            END { if (!found) exit 1 }
-          ' CHANGELOG.md > RELEASE_NOTES.md
-          test -s RELEASE_NOTES.md
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        if: needs.prepare.outputs.target == 'formal'
-        with:
-          tag_name: v${{ needs.prepare.outputs.version }}
-          name: Release v${{ needs.prepare.outputs.version }}
-          body_path: RELEASE_NOTES.md
-          fail_on_unmatched_files: false
-          overwrite_files: true
-          files: |
-            ting-reader-${{ needs.prepare.outputs.version }}.fpk
-            ting-reader-fygo-${{ needs.prepare.outputs.version }}.fpk
-            release-assets/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  publish-deployment-packages:
-    needs: [prepare, frontend-package, backend-package]
-    if: inputs.deployment_packages_only == true && needs.prepare.outputs.target == 'formal'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download deployment archives
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          pattern: '*-package*'
-          merge-multiple: true
-      - name: Verify bundled tools and replace Release archives
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          gh release view "v$VERSION" >/dev/null
-          for arch in amd64 arm64; do
-            archive="release-assets/ting-reader-backend-linux-$arch-$VERSION.tar.gz"
-            tar -tzf "$archive" > "$RUNNER_TEMP/archive-$arch.txt"
-            grep -qx 'bin/ffmpeg' "$RUNNER_TEMP/archive-$arch.txt"
-            grep -qx 'bin/ffprobe' "$RUNNER_TEMP/archive-$arch.txt"
+          docker run --rm --entrypoint /app/ting-reader "$IMAGE@$DIGEST" --help
+          docker run -d --name ting-reader-smoke -p 127.0.0.1::3000 "$IMAGE@$DIGEST"
+          trap 'docker rm -f ting-reader-smoke >/dev/null 2>&1 || true' EXIT
+          HOST_PORT=$(docker port ting-reader-smoke 3000/tcp | awk -F: 'NR==1 {print $NF}')
+          for attempt in {1..30}; do
+            if curl --fail --silent --show-error --max-time 2 "http://127.0.0.1:$HOST_PORT/api/health" > health.json; then
+              if python3 -c 'import json,os; h=json.load(open("health.json")); assert h["status"] == "healthy" and h["version"] == os.environ["VERSION"]'; then
+                docker exec ting-reader-smoke /app/bin/ffmpeg -hide_banner -encoders | grep libmp3lame
+                docker exec ting-reader-smoke /app/bin/ffprobe -version
+                exit 0
+              fi
+            fi
+            sleep 2
           done
-          gh release upload "v$VERSION" release-assets/*.tar.gz --clobber
+          docker logs ting-reader-smoke
+          exit 1
+      - name: 保存镜像摘要
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghcr-digest-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: [prepare, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ${{ needs.prepare.outputs.image }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ghcr-digest-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: 合并架构并创建新的版本标签
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "$IMAGE:$VERSION" > /dev/null 2> inspect-error.txt; then
+            echo "::error::版本镜像已存在，禁止覆盖；请发布新版本、新标签。"
+            exit 1
+          fi
+          if ! grep -Eqi 'not found|manifest unknown|name unknown' inspect-error.txt; then
+            cat inspect-error.txt
+            exit 1
+          fi
+          shopt -s nullglob
+          DIGESTS=("$RUNNER_TEMP/digests/"*)
+          test "${#DIGESTS[@]}" -eq 2
+          REFERENCES=()
+          for entry in "${DIGESTS[@]}"; do
+            digest="${entry##*/}"
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+            REFERENCES+=("$IMAGE@sha256:$digest")
+          done
+          docker buildx imagetools create \
+            --tag "$IMAGE:$VERSION" \
+            --annotation "index:org.opencontainers.image.version=$VERSION" \
+            --annotation "index:org.opencontainers.image.revision=$SOURCE_SHA" \
+            "${REFERENCES[@]}"
+          docker buildx imagetools inspect "$IMAGE:$VERSION" --raw > manifest.json
+          python3 - <<'PY'
+          import json
+          import os
+          manifest = json.load(open('manifest.json'))
+          platforms = {(item.get('platform', {}).get('os'), item.get('platform', {}).get('architecture'))
+                       for item in manifest['manifests']}
+          assert {('linux', 'amd64'), ('linux', 'arm64')} <= platforms
+          assert manifest['annotations']['org.opencontainers.image.revision'] == os.environ['SOURCE_SHA']
+          PY
+      - name: 更新 latest 且不回退已有版本
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "$IMAGE:latest" --raw > latest.json 2> latest-error.txt; then
+            PREVIOUS=$(python3 -c 'import json; print(json.load(open("latest.json")).get("annotations", {}).get("org.opencontainers.image.version", ""))')
+            if [[ ! "$PREVIOUS" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "无法确认现有 latest 版本，保留其指向；新版本镜像已发布。"
+              exit 0
+            fi
+            NEWEST=$(printf '%s\n' "$PREVIOUS" "$VERSION" | sort -V | tail -n 1)
+            if [ "$NEWEST" != "$VERSION" ]; then
+              echo "补发旧版本，不回退 latest。"
+              exit 0
+            fi
+          elif ! grep -Eqi 'not found|manifest unknown|name unknown' latest-error.txt; then
+            cat latest-error.txt
+            exit 1
+          fi
+          docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE:$VERSION"
+      - name: 输出镜像使用说明
+        run: |
+          {
+            echo "镜像：\`$IMAGE:$VERSION\`，支持 linux/amd64 和 linux/arm64。"
+            echo
+            echo "\`docker pull $IMAGE:$VERSION\`"
+            echo
+            echo "首次发布后，请在 https://github.com/users/${GITHUB_REPOSITORY_OWNER}/packages/container/ting-reader/settings 将镜像可见性设为 Public，之后即可免登录拉取。"
+          } >> "$GITHUB_STEP_SUMMARY"

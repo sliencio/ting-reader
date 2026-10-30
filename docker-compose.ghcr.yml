@@ -1,0 +1,16 @@
+services:
+  ting-reader:
+    image: ghcr.io/sliencio/ting-reader:${TING_READER_VERSION:-2.0.7}
+    container_name: ting-reader
+    restart: unless-stopped
+    ports:
+      - "${TING_READER_PORT:-3000}:3000"
+    volumes:
+      - ./data:/app/data
+      - ./plugins:/app/plugins
+      - ./temp:/app/temp
+      - ./storage:/app/storage
+    environment:
+      RUST_LOG: info
+      TING_SERVER__HOST: 0.0.0.0
+      TING_SERVER__PORT: "3000"

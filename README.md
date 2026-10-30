@@ -170,12 +170,14 @@ curl -fsSL https://www.tingreader.cn/uninstall.sh | bash
 
 ### 使用 Docker Compose (推荐)
 
+本分支的镜像发布到 **`ghcr.io/sliencio/ting-reader`**，支持 amd64、arm64。使用仓库中的 `docker-compose.ghcr.yml` 部署，安装、更新和首次公开镜像的说明见 [Docker 部署文档](docs/DOCKER.md)。本分支来源于 [dqsq2e2/ting-reader](https://github.com/dqsq2e2/ting-reader)，感谢原作者及贡献者。
+
 创建 `docker-compose.yml` 文件：
 
 ```yaml
 services:
   ting-reader:
-    image: dqsq2e2/ting-reader:latest
+    image: ghcr.io/sliencio/ting-reader:2.0.7
     container_name: ting-reader
     ports:
       - "0.0.0.0:3000:3000"
@@ -215,12 +217,12 @@ docker-compose up -d
 
 如果您使用的是飞牛 fnOS 系统，可以通过官方应用中心的“手动导入”功能快速一键部署：
 
-1.  **下载安装包**：前往 [GitHub Releases](https://github.com/dqsq2e2/ting-reader/releases) 下载最新版本的 `ting-reader-[版本号].fpk` 文件。
+1.  **下载安装包**：前往 [本仓库 GitHub Releases](https://github.com/sliencio/ting-reader/releases)，按服务器架构选择 `ting-reader-native-x86_64-[版本号].fpk` 或 `ting-reader-native-arm64-[版本号].fpk`。
 2.  **手动安装**：
     - 进入飞牛 fnOS 的 **应用中心**。
     - 点击右上角的 **手动安装** 按钮。
     - 选择并上传下载好的 `.fpk` 文件。
-3.  **完成向导**：按照图形化引导界面配置访问端口以及有声书存储路径，点击“完成”后应用将自动创建容器并添加桌面启动图标。
+3.  **完成向导**：按照图形化引导界面配置访问端口以及有声书存储路径，点击“完成”后应用将启动服务端并添加桌面入口。
 
 访问 `http://localhost:3000` (或您自定义的端口) 即可开始使用。
 
