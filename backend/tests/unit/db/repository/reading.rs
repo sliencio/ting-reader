@@ -39,6 +39,107 @@ async fn add_progress(db: &Arc<DatabaseManager>, user: &str, chapter: &str, posi
 }
 
 #[tokio::test]
+async fn chapter_read_marks_preserve_resume_activity_and_user_isolation() {
+    let (db, repo) = fixture(3).await;
+    add_progress(&db, "u1", "c00000", 30.0).await;
+    let progress = ProgressRepository::new(db.clone());
+    let before = progress.get_by_book("u1", "book").await.unwrap();
+    repo.mark_chapters(
+        "u1",
+        "book",
+        vec!["c00001".into(), "c00002".into(), "c00001".into()],
+        true,
+    )
+    .await
+    .unwrap();
+    let after = progress.get_by_book("u1", "book").await.unwrap();
+    assert_eq!(
+        serde_json::to_value(before).unwrap(),
+        serde_json::to_value(after).unwrap()
+    );
+    assert!((repo.percentages("u1").await.unwrap()["book"] - 230.0 / 3.0).abs() < 0.001);
+    assert!(
+        repo.chapter_read_marks("u2", "book")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        repo.history_chapters("u1", "book", 1, 40)
+            .await
+            .unwrap()
+            .total,
+        1
+    );
+    let total: f64 = db
+        .execute(|conn| {
+            Ok(conn.query_row(
+                "SELECT SUM(listen_seconds) FROM listening_totals WHERE user_id='u1'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(total, 30.0);
+    repo.mark_chapters("u1", "book", vec!["c00001".into()], false)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.chapter_read_marks("u1", "book").await.unwrap().len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn chapter_read_batch_is_atomic_and_unknown_duration_is_supported() {
+    let (db, repo) = fixture(2).await;
+    db.execute(|conn| {
+        conn.execute("UPDATE chapters SET duration=0", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    assert!(
+        repo.mark_chapters("u1", "book", vec!["c00000".into(), "missing".into()], true)
+            .await
+            .is_err()
+    );
+    assert!(
+        repo.chapter_read_marks("u1", "book")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    repo.mark_chapters("u1", "book", vec!["c00000".into()], true)
+        .await
+        .unwrap();
+    assert_eq!(repo.percentages("u1").await.unwrap()["book"], 50.0);
+    assert_eq!(repo.history_summary("u1", false).await.unwrap().chapters, 0);
+    repo.clear_history("u1", false, vec!["book".into()], vec![], vec![], true)
+        .await
+        .unwrap();
+    assert!(
+        repo.chapter_read_marks("u1", "book")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    repo.mark_chapters("u1", "book", vec!["c00001".into()], true)
+        .await
+        .unwrap();
+    repo.mark_books("u1", vec!["book".into()], false)
+        .await
+        .unwrap();
+    assert!(
+        repo.chapter_read_marks("u1", "book")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn read_marks_are_user_scoped_and_do_not_invent_listening_activity() {
     let (db, repo) = fixture(2).await;
     add_progress(&db, "u1", "c00000", 50.0).await;

@@ -603,6 +603,15 @@ CREATE INDEX idx_progress_user_book_visible_updated
 ON progress(user_id, book_id, history_hidden_at, updated_at DESC, id);
 "#;
 
+const MIGRATION_V31: &str = r#"
+CREATE TABLE chapter_read_marks (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+    chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    PRIMARY KEY(user_id, book_id, chapter_id)
+);
+"#;
+
 /// Run all pending database migrations
 ///
 /// This function applies database schema migrations in order.
@@ -813,6 +822,9 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     }
     if current_version < 30 {
         migrate_metadata_priority(conn)?;
+    }
+    if current_version < 31 {
+        apply_migration(conn, 31, MIGRATION_V31)?;
     }
 
     info!("Database migrations completed successfully");

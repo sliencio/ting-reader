@@ -1,8 +1,8 @@
-use crate::core::app::error::Result;
+use crate::core::app::error::{InputErrorKind, Result, TingError};
 use crate::db::manager::DatabaseManager;
 use rusqlite::{OptionalExtension, named_params};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Serialize)]
@@ -92,13 +92,18 @@ impl ReadingRepository {
         self.db
             .execute(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT p.book_id, 100.0 * SUM(CASE
+                    "SELECT c.book_id, 100.0 * SUM(CASE
+                    WHEN m.chapter_id IS NOT NULL THEN 1.0
                     WHEN COALESCE(NULLIF(c.duration, 0), NULLIF(p.duration, 0), 0) > 0
                     THEN MIN(1.0, MAX(0.0, p.position) /
                          COALESCE(NULLIF(c.duration, 0), NULLIF(p.duration, 0)))
-                    ELSE 0 END) / (SELECT COUNT(*) FROM chapters WHERE book_id=p.book_id)
-                 FROM progress p JOIN chapters c ON c.id=p.chapter_id
-                 WHERE p.user_id=?1 GROUP BY p.book_id",
+                    ELSE 0 END) / (SELECT COUNT(*) FROM chapters WHERE book_id=c.book_id)
+                 FROM (SELECT chapter_id FROM progress WHERE user_id=?1
+                       UNION SELECT chapter_id FROM chapter_read_marks WHERE user_id=?1) r
+                 JOIN chapters c ON c.id=r.chapter_id
+                 LEFT JOIN progress p ON p.chapter_id=c.id AND p.book_id=c.book_id AND p.user_id=?1
+                 LEFT JOIN chapter_read_marks m ON m.chapter_id=c.id AND m.book_id=c.book_id AND m.user_id=?1
+                 GROUP BY c.book_id",
                 )?;
                 let mut values = stmt
                     .query_map([&user], |row| {
@@ -127,6 +132,10 @@ impl ReadingRepository {
                         )?;
                     } else {
                         conn.execute(
+                            "DELETE FROM chapter_read_marks WHERE user_id=? AND book_id=?",
+                            [&user, &book],
+                        )?;
+                        conn.execute(
                             "DELETE FROM progress WHERE user_id=? AND book_id=?",
                             [&user, &book],
                         )?;
@@ -139,6 +148,62 @@ impl ReadingRepository {
                 Ok(())
             })
             .await
+    }
+
+    pub async fn chapter_read_marks(&self, user: &str, book: &str) -> Result<HashSet<String>> {
+        let user = user.to_owned();
+        let book = book.to_owned();
+        self.db
+            .execute(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT chapter_id FROM chapter_read_marks WHERE user_id=? AND book_id=?",
+                )?;
+                Ok(stmt
+                    .query_map([user, book], |row| row.get(0))?
+                    .collect::<std::result::Result<HashSet<_>, _>>()?)
+            })
+            .await
+    }
+
+    pub async fn mark_chapters(
+        &self,
+        user: &str,
+        book: &str,
+        chapters: Vec<String>,
+        read: bool,
+    ) -> Result<()> {
+        let user = user.to_owned();
+        let book = book.to_owned();
+        self.db.transaction(move |conn| {
+            // 先校验整批章节，再写入；错误章节不能造成部分成功。
+            for chapter in &chapters {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM chapters WHERE id=? AND book_id=?)",
+                    [chapter, &book], |row| row.get(0),
+                )?;
+                if !exists {
+                    return Err(TingError::invalid_request(
+                        InputErrorKind::InvalidValue,
+                        "mark_chapters::invalid_chapter",
+                        "章节不存在或不属于当前书籍".into(),
+                    ));
+                }
+            }
+            for chapter in chapters {
+                if read {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO chapter_read_marks(user_id,book_id,chapter_id) VALUES(?,?,?)",
+                        [&user, &book, &chapter],
+                    )?;
+                } else {
+                    conn.execute(
+                        "DELETE FROM chapter_read_marks WHERE user_id=? AND book_id=? AND chapter_id=?",
+                        [&user, &book, &chapter],
+                    )?;
+                }
+            }
+            Ok(())
+        }).await
     }
 
     pub async fn activity_books(
@@ -255,6 +320,31 @@ impl ReadingRepository {
                 let mut parameters = vec![rusqlite::types::Value::from(user.clone())];
                 let mut clauses = Vec::new();
                 let explicitly_selected_books = books.clone();
+                if clear_progress {
+                    if all {
+                        conn.execute("DELETE FROM chapter_read_marks WHERE user_id=?", [&user])?;
+                    } else {
+                        for book in &books {
+                            conn.execute(
+                                "DELETE FROM chapter_read_marks WHERE user_id=? AND book_id=?",
+                                [&user, book],
+                            )?;
+                        }
+                        for chapter in &chapters {
+                            conn.execute(
+                                "DELETE FROM chapter_read_marks WHERE user_id=? AND chapter_id=?",
+                                [&user, chapter],
+                            )?;
+                        }
+                        for id in &ids {
+                            conn.execute(
+                                "DELETE FROM chapter_read_marks WHERE user_id=?1 AND chapter_id IN
+                                (SELECT chapter_id FROM progress WHERE user_id=?1 AND id=?2)",
+                                [&user, id],
+                            )?;
+                        }
+                    }
+                }
                 for (column, values) in [("book_id", books), ("id", ids), ("chapter_id", chapters)]
                 {
                     if !values.is_empty() {

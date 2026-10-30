@@ -202,6 +202,7 @@ pub struct ChapterResponse {
     pub created_at: String,
     pub progress_position: Option<f64>,
     pub progress_updated_at: Option<String>,
+    pub is_read: bool,
 }
 
 impl From<crate::db::models::Chapter> for ChapterResponse {
@@ -217,6 +218,7 @@ impl From<crate::db::models::Chapter> for ChapterResponse {
             created_at: chapter.created_at,
             progress_position: None,
             progress_updated_at: None,
+            is_read: false,
         }
     }
 }

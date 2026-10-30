@@ -139,6 +139,33 @@ pub async fn mark_books(
     Ok(StatusCode::NO_CONTENT)
 }
 pub type AddBookmarkRequest = CreateBookmark;
+
+#[derive(Deserialize)]
+pub struct MarkChaptersRequest {
+    pub chapter_ids: Vec<String>,
+    pub read: bool,
+}
+
+pub async fn mark_chapters(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(book): Path<String>,
+    Json(request): Json<MarkChaptersRequest>,
+) -> Result<impl IntoResponse> {
+    if request.chapter_ids.is_empty() || request.chapter_ids.len() > 200 {
+        return Err(TingError::invalid_request(
+            InputErrorKind::InvalidValue,
+            "mark_chapters::invalid_request",
+            "请选择 1 至 200 个章节".into(),
+        ));
+    }
+    ensure_access(&state, &user, &book).await?;
+    repo(&state)
+        .mark_chapters(&user.id, &book, request.chapter_ids, request.read)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn add_bookmark(
     State(state): State<AppState>,
     user: AuthUser,

@@ -1,6 +1,51 @@
 use super::*;
 
 #[test]
+fn migration_v31_preserves_progress_and_is_repeatable() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    conn.execute_batch(
+        "PRAGMA foreign_keys=ON;
+         CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY);
+         INSERT INTO schema_migrations VALUES(30);
+         CREATE TABLE users(id TEXT PRIMARY KEY);
+         CREATE TABLE books(id TEXT PRIMARY KEY);
+         CREATE TABLE chapters(id TEXT PRIMARY KEY);
+         CREATE TABLE progress(position REAL);
+         INSERT INTO users VALUES('user');
+         INSERT INTO books VALUES('book');
+         INSERT INTO chapters VALUES('chapter');
+         INSERT INTO progress VALUES(12.5);",
+    )
+    .unwrap();
+    run_migrations(&mut conn).unwrap();
+    conn.execute(
+        "INSERT INTO chapter_read_marks VALUES('user','book','chapter')",
+        [],
+    )
+    .unwrap();
+    run_migrations(&mut conn).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT position FROM progress", [], |row| row
+            .get::<_, f64>(0))
+            .unwrap(),
+        12.5
+    );
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM chapter_read_marks", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    conn.execute("DELETE FROM chapters", []).unwrap();
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM chapter_read_marks", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn migration_v30_moves_legacy_title_flags_into_priority_without_losing_settings() {
     let mut conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(MIGRATION_TABLE).unwrap();

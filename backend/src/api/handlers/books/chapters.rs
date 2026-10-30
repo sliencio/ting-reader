@@ -30,6 +30,10 @@ pub async fn get_book_chapters(
     }
 
     let chapter_repo = ChapterRepository::new(state.book_repo.db().clone());
+    let read_marks =
+        crate::db::repository::reading::ReadingRepository::new(state.book_repo.db().clone())
+            .chapter_read_marks(&user.id, &book_id)
+            .await?;
 
     let wants_paged = query.offset.is_some()
         || query.limit.is_some()
@@ -108,6 +112,7 @@ pub async fn get_book_chapters(
                 let mut response = ChapterResponse::from(chapter);
                 response.progress_position = pos;
                 response.progress_updated_at = updated;
+                response.is_read = read_marks.contains(&response.id);
                 response
             })
             .collect();
@@ -135,6 +140,7 @@ pub async fn get_book_chapters(
             let mut response = ChapterResponse::from(chapter);
             response.progress_position = pos;
             response.progress_updated_at = updated;
+            response.is_read = read_marks.contains(&response.id);
             response
         })
         .collect();

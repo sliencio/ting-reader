@@ -1,11 +1,11 @@
 appname               = ting-reader
-version               = 2.0.6
+version               = 2.0.7
 display_name          = ${common.displayName}
 desc                  = ${common.desc}
 arch                  = x86
 source                = thirdparty
 maintainer            = ${common.maintainer}
-maintainer_url        = https://github.com/dqsq2e2/ting-reader
+maintainer_url        = https://github.com/sliencio/ting-reader
 distributor           = ${common.distributor}
 distributor_url       = ${common.distributorUrl}
 desktop_uidir         = ui

@@ -284,6 +284,7 @@ export const formatPlayerTime = (time: number): string => {
 };
 
 interface ChapterProgressLike {
+  is_read?: boolean;
   progress_position?: number | null;
   duration?: number | null;
 }
@@ -298,6 +299,7 @@ export const getChapterProgressText = (
     percent: (percent) => `Played ${percent}%`,
   }
 ): string | null => {
+  if (chapter.is_read) return labels.complete;
   if (!chapter.progress_position || !chapter.duration) return null;
 
   const percent = Math.floor((chapter.progress_position / chapter.duration) * 100);

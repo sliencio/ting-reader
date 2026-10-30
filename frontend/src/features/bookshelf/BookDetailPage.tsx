@@ -505,6 +505,7 @@ const BookDetailPage: React.FC = () => {
   };
 
   const getChapterProgressText = (chapter: Chapter) => {
+    if (chapter.is_read) return t('bookshelf.progressComplete');
     if (!chapter.progress_position || !chapter.duration) return null;
     
     const percent = Math.floor((chapter.progress_position / chapter.duration) * 100);

@@ -1,4 +1,5 @@
 export interface Chapter {
+  is_read?: boolean;
   id: string;
   book_id: string;
   title: string;

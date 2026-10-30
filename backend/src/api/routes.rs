@@ -101,6 +101,7 @@ use crate::api::handlers::{
     // User management (admin)
     list_users,
     mark_books,
+    mark_chapters,
     merge_books,
     move_chapters,
     // Proxy API
@@ -216,6 +217,7 @@ pub fn build_api_routes(state: AppState) -> Router {
         .route("/api/progress/:bookId", get(get_book_progress))
         .route("/api/progress", post(update_progress))
         .route("/api/books/read-status", post(mark_books))
+        .route("/api/books/:id/chapters/read-status", post(mark_chapters))
         .route("/api/history/books", get(history_books))
         .route("/api/history/summary", get(history_summary))
         .route("/api/history/books/:bookId/chapters", get(history_chapters))

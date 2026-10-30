@@ -11,9 +11,6 @@ on:
         description: 'Rebuild and publish only frontend/backend deployment archives'
         type: boolean
         default: false
-  push:
-    tags:
-      - 'v*'
 
 env:
   FNPACK_VERSION: "1.2.3"
@@ -455,4 +452,3 @@ jobs:
             grep -qx 'bin/ffprobe' "$RUNNER_TEMP/archive-$arch.txt"
           done
           gh release upload "v$VERSION" release-assets/*.tar.gz --clobber
-

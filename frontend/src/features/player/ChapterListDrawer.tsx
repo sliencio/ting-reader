@@ -149,9 +149,9 @@ const ChapterListDrawer: React.FC<Props> = ({
             const actualIndex = currentGroupIndex * chaptersPerGroup + index;
             const isCurrent = currentChapter?.id === chapter.id;
             const progressText = getChapterProgressText(chapter);
-            const isCompleted = !!chapter.progress_position
+            const isCompleted = !!chapter.is_read || (!!chapter.progress_position
               && !!chapter.duration
-              && chapter.progress_position / chapter.duration >= 0.95;
+              && chapter.progress_position / chapter.duration >= 0.95);
 
             return (
               <div
