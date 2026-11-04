@@ -6,7 +6,7 @@ use super::{LibraryScanner, LocalLibraryScanContext, MetadataSource, ScanResult,
 use crate::core::app::error::Result;
 use crate::core::library_scanner::shared::{
     ChapterRangeDir, CoalescedRangeDirs, SeriesDirectoryCandidate, infer_series_directories,
-    parse_chapter_range_dir_name, select_mergeable_range_groups,
+    parse_chapter_range_dir_name, parse_pure_range_dir_name, select_mergeable_range_groups,
 };
 use crate::db::repository::Repository;
 use chapters::ChapterProcessingOptions;
@@ -753,6 +753,41 @@ fn coalesce_local_range_directory_groups(
     HashMap<PathBuf, Vec<PathBuf>>,
     HashMap<PathBuf, CoalescedRangeDirs<PathBuf>>,
 ) {
+    // 先摊平纯区间目录（如 `1-500`），把里面的音频直接并到父目录。
+    // 区间目录可能嵌套（如 `1~500/1-100`），摊平一次后会重新产出新的父目录
+    // 分组，因此反复处理直到没有可摊平的目录。
+    loop {
+        let mut flattens: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for dir in dir_groups.keys() {
+            let Some(parent) = dir.parent() else {
+                continue;
+            };
+            let Some(dir_name) = dir.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if parse_pure_range_dir_name(dir_name).is_some() {
+                flattens.push((dir.clone(), parent.to_path_buf()));
+            }
+        }
+        if flattens.is_empty() {
+            break;
+        }
+        // 先处理层级最深的，避免父目录被提前重建后又漏掉它的子目录。
+        flattens.sort_by_key(|(dir, _)| std::cmp::Reverse(dir.components().count()));
+
+        for (child_dir, parent) in flattens {
+            if let Some(mut child_files) = dir_groups.remove(&child_dir) {
+                debug!(
+                    dir = %child_dir.display(),
+                    parent = %parent.display(),
+                    files = child_files.len(),
+                    "区间目录已摊平到父目录"
+                );
+                dir_groups.entry(parent).or_default().append(&mut child_files);
+            }
+        }
+    }
+
     let mut candidates: HashMap<PathBuf, Vec<(PathBuf, ChapterRangeDir)>> = HashMap::new();
 
     for dir in dir_groups.keys() {

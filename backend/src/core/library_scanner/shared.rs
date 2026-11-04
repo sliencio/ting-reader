@@ -450,6 +450,22 @@ pub(crate) fn parse_chapter_range_dir_name(name: &str) -> Option<ChapterRangeDir
     })
 }
 
+/// 把「名字本身就是一个集数区间」的目录直通到底。
+///
+/// 形如 `1-500`、`第1-500集`、`1-500章` 的目录只是分段容器，没有书名语义。
+/// 这类目录不该被当成独立书目，也不该走「合并成系列」的分支——直接把它的
+/// 文件摊平到父目录，由父目录统一做章节映射。
+///
+/// 返回 `Some((start, end))` 表示这是纯区间目录。
+pub(crate) fn parse_pure_range_dir_name(name: &str) -> Option<(u32, u32)> {
+    let range = parse_chapter_range_dir_name(name)?;
+    // 有书名上下文说明这是「书名 1-500」这类分段，交给合并逻辑处理。
+    if !range.context.is_empty() {
+        return None;
+    }
+    Some((range.start, range.end))
+}
+
 pub(crate) fn select_mergeable_range_groups(
     parent_name: &str,
     ranges: &[ChapterRangeDir],

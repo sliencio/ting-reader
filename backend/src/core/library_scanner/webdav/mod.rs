@@ -624,6 +624,11 @@ impl LibraryScanner {
         false
     }
 
+    /// 把「纯区间目录」直接摊平到父目录。
+    ///
+    /// 形如 `1-500` 的目录只是分段容器，不是一本书。直接把里面的音频文件
+    /// 并进父目录，由父目录统一建立章节；这样书里的集数就是 1~500，
+    /// 而不是出现一本名叫「1-500」的书。
     fn coalesce_webdav_range_directory_groups(
         &self,
         mut dir_groups: HashMap<String, Vec<WebDavFileEntry>>,

@@ -136,19 +136,28 @@ impl LibraryScanner {
             }
         };
 
-        // Limit depth/count to prevent infinite loops
+        // 遍历深度上限：只防死循环，不再当作「正常规模」的边界。
+        // 云盘书库里上千个目录很常见，撞上限就整次失败会让用户完全扫不出书。
         let mut processed_dirs = 0;
-        let max_dirs = 1000;
+        let max_dirs = 20_000;
+        // 目录未能完整列出（限流、超时、超过上限）时，仍然处理已成功列出的
+        // 部分，只跳过删除判定。这样个别目录失败不会让整本书消失。
         let mut listing_complete = true;
+        let mut failed_dirs = 0usize;
+        // 腾讯/阿里云盘 WebDAV 网关常见的 429 限流需要退避重试。
+        let min_request_interval = std::time::Duration::from_millis(500);
+        let max_attempts = 4;
         let mut last_request_time = std::time::Instant::now();
-        let min_request_interval = std::time::Duration::from_millis(200); // 200ms between requests
 
         while let Some(current_url) = queue.pop_front() {
             // Check cancellation
             self.check_cancellation(task_id).await?;
 
             if processed_dirs >= max_dirs {
-                warn!("Max WebDAV directories limit reached");
+                warn!(
+                    max_dirs,
+                    "WebDAV 目录数量达到上限 {max_dirs}，本次只处理已列出的部分；因列表不完整，跳过删除判定"
+                );
                 listing_complete = false;
                 break;
             }
@@ -162,33 +171,93 @@ impl LibraryScanner {
             }
 
             // PROPFIND request with browser-like headers
-            let mut req = client
-                .request(
-                    reqwest::Method::from_bytes(b"PROPFIND").unwrap(),
-                    &current_url,
-                )
-                .header("Depth", "1")
-                .header(
-                    "Accept",
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                )
-                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-                .header("Accept-Encoding", "gzip, deflate, br")
-                .header("Connection", "keep-alive");
+            let mut last_error: Option<String> = None;
+            let mut response: Option<reqwest::Response> = None;
 
-            if let (Some(u), Some(p)) = (username, &password) {
-                req = req.basic_auth(u, Some(p));
+            for attempt in 1..=max_attempts {
+                let mut req = client
+                    .request(
+                        reqwest::Method::from_bytes(b"PROPFIND").unwrap(),
+                        &current_url,
+                    )
+                    .header("Depth", "1")
+                    .header(
+                        "Accept",
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    )
+                    .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                    .header("Accept-Encoding", "gzip, deflate, br")
+                    .header("Connection", "keep-alive");
+
+                if let (Some(u), Some(p)) = (username, &password) {
+                    req = req.basic_auth(u, Some(p));
+                }
+
+                last_request_time = std::time::Instant::now();
+
+                match req.send().await {
+                    Ok(res) => {
+                        let status = res.status();
+                        let retryable = status.as_u16() == 429
+                            || status.as_u16() == 408
+                            || status.is_server_error();
+                        if retryable && attempt < max_attempts {
+                            // 429 优先尊重服务端的 Retry-After。
+                            let wait = retry_after_from(&res)
+                                .unwrap_or_else(|| backoff_delay(attempt));
+                            warn!(
+                                url = %current_url,
+                                status = %status,
+                                attempt,
+                                wait_ms = wait.as_millis() as u64,
+                                "WebDAV 目录请求被限流或暂时失败，稍后重试"
+                            );
+                            tokio::time::sleep(wait).await;
+                            continue;
+                        }
+                        response = Some(res);
+                        break;
+                    }
+                    Err(e) => {
+                        last_error = Some(e.to_string());
+                        if attempt < max_attempts {
+                            let wait = backoff_delay(attempt);
+                            warn!(
+                                url = %current_url,
+                                error = %e,
+                                attempt,
+                                wait_ms = wait.as_millis() as u64,
+                                "WebDAV 目录请求出现异常，稍后重试"
+                            );
+                            tokio::time::sleep(wait).await;
+                            continue;
+                        }
+                    }
+                }
             }
 
-            last_request_time = std::time::Instant::now();
+            let Some(res) = response else {
+                failed_dirs += 1;
+                listing_complete = false;
+                warn!(
+                    url = %current_url,
+                    attempts = max_attempts,
+                    error = last_error.as_deref().unwrap_or("未知错误"),
+                    "WebDAV 目录在 {max_attempts} 次尝试后仍无法列出，跳过该目录"
+                );
+                continue;
+            };
 
-            match req.send().await {
-                Ok(res) => {
-                    if res.status().is_success() || res.status().as_u16() == 207 {
-                        let xml = res.text().await.unwrap_or_default();
-                        let items = self.parse_webdav_response(&xml, &current_url);
+            if res.status().is_success() || res.status().as_u16() == 207 {
+                let xml = res.text().await.unwrap_or_default();
+                let items = self.parse_webdav_response(&xml, &current_url);
+                if items.is_empty() {
+                    // 正常的空目录不会返回任何子项；但只有自身项时说明服务端
+                    // 返回了不完整内容，保守地标记为不完整。
+                    debug!(url = %current_url, "WebDAV 目录为空或没有可解析的子项");
+                }
 
-                        for (item_url, is_dir, last_mod, etag) in items {
+                for (item_url, is_dir, last_mod, etag) in items {
                             // Avoid re-processing current_url (PROPFIND returns self)
                             // We need to handle trailing slashes carefully
                             let item_norm = item_url.trim_end_matches('/');
@@ -316,20 +385,23 @@ impl LibraryScanner {
                                 cache_states.push(state);
                             }
                         }
-                    } else {
-                        listing_complete = false;
-                        warn!(
-                            "WebDAV PROPFIND failed for {}: {}",
-                            current_url,
-                            res.status()
-                        );
-                    }
-                }
-                Err(e) => {
+                } else {
+                    failed_dirs += 1;
                     listing_complete = false;
-                    warn!("WebDAV request failed for {}: {}", current_url, e);
-                }
+                    warn!(
+                        url = %current_url,
+                        status = %res.status(),
+                    "WebDAV 目录返回非成功状态，跳过该目录"
+                );
             }
+        }
+
+        if failed_dirs > 0 {
+            warn!(
+                failed = failed_dirs,
+                processed = processed_dirs,
+                "本次扫描有 {failed_dirs} 个目录未能列出（共 {processed_dirs} 个）；已列出的部分照常入库，跳过删除判定"
+            );
         }
 
         if listing_complete {
@@ -396,12 +468,16 @@ impl LibraryScanner {
         }
 
         if !listing_complete {
-            return Err(TingError::network(
-                NetworkErrorKind::Transport,
-                "list_webdav_files::network",
-                "WebDAV directory listing was incomplete; existing scan state was preserved"
-                    .to_string(),
-            ));
+            // 以前这里直接返回错误，导致整次扫描中止：连已经正常列出的书和
+            // 章节都不会入库，表现就是「新增了书但曲目列表为空」。现在只提示，
+            // 已列出的部分照常处理，删除判定在前面已经跳过。
+            warn!(
+                failed = failed_dirs,
+                processed = processed_dirs,
+                discovered = files.len(),
+                "WebDAV 目录列表不完整，本次只按已列出的 {} 个文件入库，不做删除判定",
+                files.len()
+            );
         }
 
         Ok(files
@@ -977,6 +1053,24 @@ fn webdav_parent_url(value: &str) -> Option<String> {
     url.set_query(None);
     url.set_fragment(None);
     Some(url.to_string().trim_end_matches('/').to_string())
+}
+
+/// 指数退避：500ms、1s、2s，并加少量随机抖动避免多线程同时重试。
+fn backoff_delay(attempt: u32) -> std::time::Duration {
+    let base = 500u64.saturating_mul(1u64 << attempt.min(4));
+    let jitter = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_millis() as u64)
+        .unwrap_or(0))
+        % 250;
+    std::time::Duration::from_millis(base + jitter)
+}
+
+/// 读取服务端 `Retry-After`（秒数形式）。云盘网关在 429 时通常会给。
+fn retry_after_from(res: &reqwest::Response) -> Option<std::time::Duration> {
+    let value = res.headers().get(reqwest::header::RETRY_AFTER)?;
+    let seconds = value.to_str().ok()?.trim().parse::<u64>().ok()?;
+    Some(std::time::Duration::from_secs(seconds.min(30)))
 }
 
 fn scan_state_payload_matches(left: &LibraryScanState, right: &LibraryScanState) -> bool {

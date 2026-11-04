@@ -343,8 +343,8 @@ mod titles_and_ranges {
 
     use super::{
         ChapterRangeDir, apply_chapter_title_template, chapter_title_template_preserves_raw,
-        parse_chapter_range_dir_name, select_mergeable_range_group, select_mergeable_range_groups,
-        strip_likely_file_extension,
+        parse_chapter_range_dir_name, parse_pure_range_dir_name, select_mergeable_range_group,
+        select_mergeable_range_groups, strip_likely_file_extension,
     };
 
     #[test]
@@ -429,6 +429,24 @@ mod titles_and_ranges {
         assert!(parse_chapter_range_dir_name("2024-2025").is_none());
         assert!(parse_chapter_range_dir_name("500-1").is_none());
         assert!(parse_chapter_range_dir_name("1-50-100").is_none());
+    }
+
+    #[test]
+    fn recognizes_pure_range_directories_only() {
+        // 只有区间的目录是分段容器，可以被摊平到父目录。
+        assert_eq!(parse_pure_range_dir_name("1~500"), Some((1, 500)));
+        assert_eq!(parse_pure_range_dir_name("1-500"), Some((1, 500)));
+        assert_eq!(parse_pure_range_dir_name("第1-500集"), Some((1, 500)));
+        assert_eq!(parse_pure_range_dir_name("[0501～1000]"), Some((501, 1000)));
+
+        // 带书名上下文的目录属于「书名+分段」，交给合并逻辑处理。
+        assert!(parse_pure_range_dir_name("书名 1-500").is_none());
+        assert!(parse_pure_range_dir_name("【书名】001-050").is_none());
+
+        // 普通书名、日期目录、顺序错误的区间都不算。
+        assert!(parse_pure_range_dir_name("完美世界").is_none());
+        assert!(parse_pure_range_dir_name("2024-2025").is_none());
+        assert!(parse_pure_range_dir_name("500-1").is_none());
     }
 
     #[test]
