@@ -904,7 +904,7 @@ const zhCN = {
     bookNameLayoutTitleNarrator: "书名 - 演播",
     bookNameLayoutTitleOnly: "只取书名（不解析作者和演播）",
     bookNameLayoutCustom: "自定义正则",
-    bookNameRegexPlaceholder: "^(?P<title>.+?)\s*-\s*(?P<narrator>[^-]+)\s*-\s*(?P<author>.+)$",
+    bookNameRegexPlaceholder: "^(?P<title>.+?)\\s*-\\s*(?P<narrator>[^-]+)\\s*-\\s*(?P<author>.+)$",
     bookNameRegexHelp:
       "推荐使用命名分组 title / author / narrator。没有命名分组时按位置取：第 1 组书名、第 2 组作者、第 3 组演播。",
     autoGenerateSeries: "自动生成系列",

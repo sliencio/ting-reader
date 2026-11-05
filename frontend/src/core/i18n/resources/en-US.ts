@@ -948,7 +948,7 @@ const enUS = {
     bookNameLayoutTitleNarrator: "Title - Narrator",
     bookNameLayoutTitleOnly: "Title only (skip author and narrator)",
     bookNameLayoutCustom: "Custom regex",
-    bookNameRegexPlaceholder: "^(?P<title>.+?)\s*-\s*(?P<narrator>[^-]+)\s*-\s*(?P<author>.+)$",
+    bookNameRegexPlaceholder: "^(?P<title>.+?)\\s*-\\s*(?P<narrator>[^-]+)\\s*-\\s*(?P<author>.+)$",
     bookNameRegexHelp:
       "Named groups title / author / narrator are preferred. Without them, group 1 is the title, group 2 the author, and group 3 the narrator.",
     autoGenerateSeries: "Automatically create series",
