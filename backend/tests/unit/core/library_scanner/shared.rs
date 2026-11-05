@@ -477,6 +477,39 @@ mod titles_and_ranges {
     }
 
     #[test]
+    fn merges_every_non_overlapping_range_group_into_the_parent() {
+        // 同一本书的区间目录，因为书名区域写法不同被拆成多个 context 键。
+        // 这些分组彼此不重叠，应当全部并进父目录，而不是只并其中一组。
+        let ranges: Vec<_> = ["1-100", "完美世界 101-200", "完美世界续集 201-300"]
+            .into_iter()
+            .map(|name| parse_chapter_range_dir_name(name).unwrap())
+            .collect();
+        let groups = select_mergeable_range_groups("完美世界", &ranges);
+        assert_eq!(groups.len(), 3, "{groups:?}");
+        assert!(groups.iter().all(|group| group.merge_into_parent));
+        let mut merged: Vec<usize> = groups
+            .iter()
+            .flat_map(|group| group.indices.clone())
+            .collect();
+        merged.sort_unstable();
+        assert_eq!(merged, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn keeps_overlapping_range_groups_apart() {
+        // 区间互相重叠，更像是两本书放进了同一个目录，不能硬并成一本。
+        let ranges: Vec<_> = ["1-100", "50-150"]
+            .into_iter()
+            .map(|name| parse_chapter_range_dir_name(name).unwrap())
+            .collect();
+        let groups = select_mergeable_range_groups("合集", &ranges);
+        assert!(
+            groups.iter().all(|group| !group.merge_into_parent),
+            "{groups:?}"
+        );
+    }
+
+    #[test]
     fn arbitrary_suffixes_do_not_change_range_group_identity() {
         for suffix in [
             "完结",

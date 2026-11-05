@@ -479,39 +479,60 @@ pub(crate) fn select_mergeable_range_groups(
             .push(index);
     }
 
-    let mut contextual_groups = Vec::new();
     let mut parent_groups = Vec::new();
+    let mut contextual_groups = Vec::new();
 
     for indices in by_context.values() {
         let group: Vec<ChapterRangeDir> =
             indices.iter().map(|index| ranges[*index].clone()).collect();
-        if !is_sequential_range_group(&group) {
+        if group.is_empty() {
             continue;
         }
 
-        let context = group[0].context.as_str();
-        if context.is_empty() || range_context_matches_parent(parent_name, context) {
+        // 目录名没有书名（`1-50`），或书名正好就是父目录名（`完美世界 1-50`
+        // 放在 `完美世界` 目录下），都属于父目录这本书。
+        let belongs_to_parent = group.iter().all(|range| {
+            range.context.is_empty() || range_context_matches_parent(parent_name, &range.context)
+        });
+        if belongs_to_parent {
+            // 单个目录天然「有序」；多个目录才需要确认区间不重叠、不倒退。
+            if group.len() > 1 && !is_sequential_range_group(&group) {
+                continue;
+            }
             parent_groups.push(ChapterRangeMergeGroup {
                 indices: indices.clone(),
                 title: None,
                 merge_into_parent: true,
             });
-        } else {
-            let title = group
-                .iter()
-                .find_map(|range| range.context_title.clone())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| context.to_string());
-            contextual_groups.push(ChapterRangeMergeGroup {
-                indices: indices.clone(),
-                title: Some(title),
-                merge_into_parent: false,
-            });
+            continue;
         }
+
+        if !is_sequential_range_group(&group) {
+            continue;
+        }
+
+        // 目录名里带了别的书名，说明这是一本书被拆到了若干区间目录
+        // （如「甲书 1-50」「甲书 51-100」）。保留各自的 context 作为书名，
+        // 便于后续合并成一本。
+        let context = group[0].context.as_str();
+        let title = group
+            .iter()
+            .find_map(|range| range.context_title.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| context.to_string());
+        contextual_groups.push(ChapterRangeMergeGroup {
+            indices: indices.clone(),
+            title: Some(title),
+            merge_into_parent: false,
+        });
     }
 
-    if parent_groups.len() == 1 {
-        contextual_groups.push(parent_groups.remove(0));
+    // 同一本书的区间目录常因书名写法不一致被拆成多个 context 键。只要各组区间
+    // 彼此不重叠，就可以安全地一起并进父目录。以前条件写成「恰好一个分组」，
+    // 多个分组时全部丢弃：这本书只合并了一部分，剩下的区间目录变成独立书目，
+    // 书名还是从区间目录名硬猜出来的。
+    if parent_spans_do_not_overlap(&parent_groups, ranges) {
+        contextual_groups.append(&mut parent_groups);
     }
 
     contextual_groups.sort_by(|left, right| {
@@ -535,6 +556,32 @@ pub(crate) fn select_mergeable_range_groups(
     });
 
     contextual_groups
+}
+
+/// 多个「并入父目录」的分组是否可以安全地一起并进去。
+///
+/// 只要各组的区间彼此不重叠，答案就是可以：它们描述的都是父目录这本书里
+/// 不同区间的集数，合并后章节序号依然唯一。真正危险的是区间互相重叠——
+/// 那更可能是两本书被放进了同一个目录，此时保留分组、按各自的 context
+/// 处理更合适。
+fn parent_spans_do_not_overlap(
+    groups: &[ChapterRangeMergeGroup],
+    ranges: &[ChapterRangeDir],
+) -> bool {
+    if groups.is_empty() {
+        return false;
+    }
+    let mut spans = groups
+        .iter()
+        .flat_map(|group| group.indices.iter())
+        .filter_map(|index| ranges.get(*index))
+        .map(|range| (range.start, range.end))
+        .collect::<Vec<_>>();
+    if spans.is_empty() {
+        return false;
+    }
+    spans.sort_unstable();
+    spans.windows(2).all(|pair| pair[1].0 >= pair[0].1)
 }
 
 fn is_sequential_range_group(ranges: &[ChapterRangeDir]) -> bool {

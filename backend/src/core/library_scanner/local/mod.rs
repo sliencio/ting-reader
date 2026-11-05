@@ -480,14 +480,39 @@ impl LibraryScanner {
                             }
                         }
                     }
-                    debug!(book_id = %book_id, path = ?dir, status = ?status, "Processed book directory");
+                    let status_label = match status {
+                        ScanStatus::Created => "新增书籍",
+                        ScanStatus::Updated => "更新书籍",
+                        ScanStatus::Skipped => "内容未变，跳过",
+                    };
+                    let book_label = dir
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("未知目录");
+                    info!(
+                        book_id = %book_id,
+                        dir = %book_label,
+                        status = status_label,
+                        chapters = files.len(),
+                        "本地扫描：{status_label}「{book_label}」（{} 集）",
+                        files.len()
+                    );
                 }
                 Err(e) => {
                     scan_result.failed_count += 1;
-                    warn!(path = ?dir, error = %e, "Failed to process book directory");
+                    let book_label = dir
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("未知目录");
+                    warn!(
+                        dir = %book_label,
+                        path = ?dir,
+                        error = %e,
+                        "本地扫描：处理「{book_label}」失败"
+                    );
                     scan_result
                         .errors
-                        .push(format!("Failed to process {}: {}", dir.display(), e));
+                        .push(format!("处理失败 {}: {}", dir.display(), e));
                 }
             }
 
@@ -508,8 +533,10 @@ impl LibraryScanner {
                     .await
                 {
                     warn!(
-                        "Failed to absorb range-segment book {} into {}: {}",
-                        source_id, target_id, e
+                        source_id = %source_id,
+                        target_id = %target_id,
+                        error = %e,
+                        "本地扫描：区间分段的书未能并回主书籍"
                     );
                 } else {
                     if let Some((_, source_path, _, _, _)) = all_books_minimal
@@ -527,8 +554,9 @@ impl LibraryScanner {
                 );
                 if let Err(e) = self.book_repo.delete(&source_id).await {
                     warn!(
-                        "Failed to delete absorbed range-segment book {}: {}",
-                        source_id, e
+                        source_id = %source_id,
+                        error = %e,
+                        "本地扫描：清理已合并的区间书籍失败"
                     );
                 } else {
                     if let Some((_, source_path, _, _, _)) = all_books_minimal
@@ -540,8 +568,9 @@ impl LibraryScanner {
                     scan_result.books_deleted += 1;
                     if let Err(e) = self.chapter_repo.delete_by_book(&source_id).await {
                         warn!(
-                            "Failed to delete chapters for absorbed range-segment book {}: {}",
-                            source_id, e
+                            source_id = %source_id,
+                            error = %e,
+                            "本地扫描：清理已合并区间书籍的章节失败"
                         );
                     }
                 }
@@ -566,13 +595,17 @@ impl LibraryScanner {
                             .unwrap_or(false);
                     if in_scope {
                         deleted_book_state_paths.push(path_str.clone());
-                        info!("Book path missing, deleting record: {}", path_str);
+                        info!(path = %path_str, "本地扫描：目录已不存在，删除书籍记录");
                         if let Err(e) = self.book_repo.delete(&id).await {
-                            warn!("Failed to delete missing book {}: {}", id, e);
+                            warn!(book_id = %id, error = %e, "本地扫描：删除已失效的书籍失败");
                         } else {
                             scan_result.books_deleted += 1;
                             if let Err(e) = self.chapter_repo.delete_by_book(&id).await {
-                                warn!("Failed to delete chapters for missing book {}: {}", id, e);
+                                warn!(
+                                    book_id = %id,
+                                    error = %e,
+                                    "本地扫描：删除已失效书籍的章节失败"
+                                );
                             }
                         }
                     }
@@ -855,13 +888,19 @@ fn coalesce_local_range_directory_groups(
             }
 
             if !child_dirs.is_empty() {
-                coalesced_range_dirs.insert(
-                    target_dir,
-                    CoalescedRangeDirs {
-                        child_dirs,
-                        title_override: group.title,
-                    },
-                );
+                // 多个分组可能都并进同一个父目录。旧写法直接 insert，
+                // 后一个分组会把前一个的 child_dirs 覆盖掉，导致先前那些
+                // 区间目录下的旧书不会被吸收，扫描后仍留在书架上。
+                let entry = coalesced_range_dirs
+                    .entry(target_dir)
+                    .or_insert(CoalescedRangeDirs {
+                        child_dirs: Vec::new(),
+                        title_override: None,
+                    });
+                entry.child_dirs.extend(child_dirs);
+                if entry.title_override.is_none() {
+                    entry.title_override = group.title;
+                }
             }
         }
     }

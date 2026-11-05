@@ -13,7 +13,7 @@ use crate::core::library_scanner::shared::{
 use crate::db::repository::Repository;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 type WebDavFileEntry = (
     String,
@@ -280,14 +280,12 @@ impl LibraryScanner {
 
                 info!(
                     book_id = %id,
-                    url = %dir_url,
-                    max_mtime = ?max_mtime,
-                    last_scan_time = %last_scan_time,
+                    dir = %dir_name,
                     total_files = file_entries.len(),
                     files_with_mtime = mtime_count,
                     current_file_count = current_file_count,
                     existing_chapter_count = existing_chapter_count,
-                    "Checking if WebDAV book needs update"
+                    "WebDAV 扫描：「{dir_name}」已有记录，核对是否需要更新（现有 {existing_chapter_count} 集，磁盘上 {current_file_count} 集）"
                 );
 
                 // Skip only if:
@@ -319,8 +317,8 @@ impl LibraryScanner {
                             if should_reprocess_chapter_titles {
                                 info!(
                                     book_id = %id,
-                                    url = %dir_url,
-                                    "WebDAV book is up to date but chapter title rules changed, will reprocess chapters"
+                                    dir = %dir_name,
+                                    "WebDAV 扫描：「{dir_name}」内容没变，但章节命名规则改了，重新处理章节"
                                 );
                             } else {
                                 // Book exists and is up to date
@@ -339,23 +337,33 @@ impl LibraryScanner {
                                         Some(state_config_fingerprint.clone());
                                     pending_book_states.push(state);
                                 }
-                                info!(book_id = %id, url = %dir_url, "Skipping up-to-date WebDAV book");
+                                info!(
+                                    book_id = %id,
+                                    dir = %dir_name,
+                                    "WebDAV 扫描：「{dir_name}」内容未变，跳过"
+                                );
                                 continue;
                             }
                         } else {
-                            info!(book_id = %id, url = %dir_url, "WebDAV book has newer files, will update");
+                            info!(
+                                book_id = %id,
+                                dir = %dir_name,
+                                "WebDAV 扫描：「{dir_name}」有文件比上次扫描更新，重新处理"
+                            );
                         }
                     } else {
                         // No modification times available, force update
-                        info!(book_id = %id, url = %dir_url, "No modification times available, will process book");
+                        info!(
+                            book_id = %id,
+                            dir = %dir_name,
+                            "WebDAV 扫描：「{dir_name}」拿不到修改时间，按需重新处理"
+                        );
                     }
                 } else {
                     info!(
                         book_id = %id,
-                        url = %dir_url,
-                        "File count changed ({} -> {}), will process book",
-                        existing_chapter_count,
-                        current_file_count
+                        dir = %dir_name,
+                        "WebDAV 扫描：「{dir_name}」集数变化（{existing_chapter_count} → {current_file_count}），重新处理"
                     );
                 }
             }
@@ -423,11 +431,28 @@ impl LibraryScanner {
                             }
                         }
                     }
-                    debug!(book_id = %book_id, url = %dir_url, status = ?status, "Processed WebDAV book directory");
+                    let status_label = match status {
+                        ScanStatus::Created => "新增书籍",
+                        ScanStatus::Updated => "更新书籍",
+                        ScanStatus::Skipped => "内容未变，跳过",
+                    };
+                    info!(
+                        book_id = %book_id,
+                        dir = %dir_name,
+                        status = status_label,
+                        chapters = file_urls.len(),
+                        "WebDAV 扫描：{status_label}「{dir_name}」（{} 集）",
+                        file_urls.len()
+                    );
                 }
                 Err(e) => {
                     scan_result.failed_count += 1;
-                    warn!(url = %dir_url, error = %e, "Failed to process WebDAV book directory");
+                    warn!(
+                        dir = %dir_name,
+                        url = %dir_url,
+                        error = %e,
+                        "WebDAV 扫描：处理「{dir_name}」失败"
+                    );
                     scan_result
                         .errors
                         .push(format!("Failed to process {}: {}", dir_url, e));
@@ -695,13 +720,20 @@ impl LibraryScanner {
                 }
 
                 if !child_dirs.is_empty() {
-                    coalesced_range_dirs.insert(
-                        target_dir,
-                        CoalescedRangeDirs {
-                            child_dirs,
-                            title_override: group.title,
-                        },
-                    );
+                    // 多个分组可能都并进同一个父目录。旧写法直接 insert，
+                    // 后一个分组会把前一个的 child_dirs 覆盖掉，导致先前那些
+                    // 区间目录下的旧书不会被吸收，扫描后仍留在书架上。
+                    let entry =
+                        coalesced_range_dirs
+                            .entry(target_dir)
+                            .or_insert(CoalescedRangeDirs {
+                                child_dirs: Vec::new(),
+                                title_override: None,
+                            });
+                    entry.child_dirs.extend(child_dirs);
+                    if entry.title_override.is_none() {
+                        entry.title_override = group.title;
+                    }
                 }
             }
         }
