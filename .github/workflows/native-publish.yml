@@ -187,9 +187,37 @@ jobs:
 
           cp backend/config.toml .github/ting-reader-fpk-native/app/server/
           cp -r frontend/dist .github/ting-reader-fpk-native/app/server/static
-          curl --fail --location --retry 3 \
-            "https://github.com/dqsq2e2/ting-reader-plugin-store/releases/download/v${TING_PLUGIN_STORE_VERSION}/ting-reader-plugin-store-${TING_PLUGIN_STORE_VERSION}.tr" \
-            --output .github/ting-reader-fpk-native/app/server/preinstalled-plugins/ting-reader-plugin-store.tr
+          # GitHub release 重定向端点偶发返回 5xx，--retry 默认不覆盖这类错误，
+          # 因此显式重试所有错误，并在两个镜像之间回退。
+          PLUGIN_STORE_OUT=".github/ting-reader-fpk-native/app/server/preinstalled-plugins/ting-reader-plugin-store.tr"
+          PLUGIN_STORE_ASSET="ting-reader-plugin-store-${TING_PLUGIN_STORE_VERSION}.tr"
+          downloaded=0
+          for base in \
+            "https://github.com/dqsq2e2/ting-reader-plugin-store/releases/download" \
+            "https://gitee.com/dqsq2e2/ting-reader-plugin-store/releases/download"
+          do
+            echo "Downloading ${PLUGIN_STORE_ASSET} from ${base}"
+            if curl --fail --location \
+                 --retry 6 --retry-all-errors --retry-delay 5 \
+                 --connect-timeout 15 --max-time 300 \
+                 --output "$PLUGIN_STORE_OUT" \
+                 "${base}/v${TING_PLUGIN_STORE_VERSION}/${PLUGIN_STORE_ASSET}"
+            then
+              downloaded=1
+              break
+            fi
+            echo "::warning::Download from ${base} failed, trying next mirror"
+          done
+          if [ "$downloaded" -ne 1 ]; then
+            echo "::error::Failed to download ${PLUGIN_STORE_ASSET} from every mirror"
+            exit 1
+          fi
+          # 校验包体是完整的 .tr 归档，避免把错误页当成插件写入镜像
+          head -c 8 "$PLUGIN_STORE_OUT" | grep -q "TRPACK" || {
+            echo "::error::${PLUGIN_STORE_OUT} is not a valid .tr package"
+            exit 1
+          }
+          ls -l "$PLUGIN_STORE_OUT"
           chmod +x .github/ting-reader-fpk-native/app/server/ting-reader
           chmod +x .github/ting-reader-fpk-native/cmd/*
 
