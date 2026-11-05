@@ -179,7 +179,7 @@ curl -fsSL https://www.tingreader.cn/uninstall.sh | bash
 ```yaml
 services:
   ting-reader:
-    image: ghcr.io/sliencio/ting-reader:2.0.9
+    image: ghcr.io/sliencio/ting-reader:2.0.8
     container_name: ting-reader
     ports:
       - "0.0.0.0:3000:3000"

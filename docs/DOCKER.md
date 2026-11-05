@@ -13,12 +13,12 @@ docker compose -f docker-compose.ghcr.yml pull
 docker compose -f docker-compose.ghcr.yml up -d
 ```
 
-默认使用固定版本 `2.0.9`，访问 `http://服务器地址:3000`。数据、插件、缓存和有声书分别保存在部署目录的 `data`、`plugins`、`temp`、`storage` 中。升级现有实例时继续使用原有数据目录和媒体挂载路径，先备份数据库。
+默认使用固定版本 `2.0.8`，访问 `http://服务器地址:3000`。数据、插件、缓存和有声书分别保存在部署目录的 `data`、`plugins`、`temp`、`storage` 中。升级现有实例时继续使用原有数据目录和媒体挂载路径，先备份数据库。
 
 更新至后续版本时，可修改 Compose 文件中的默认版本，或在同目录的 `.env` 中指定：
 
 ```dotenv
-TING_READER_VERSION=2.0.9
+TING_READER_VERSION=2.0.8
 TING_READER_PORT=3000
 ```
 
@@ -27,7 +27,7 @@ TING_READER_PORT=3000
 也可单独拉取指定版本：
 
 ```bash
-docker pull ghcr.io/sliencio/ting-reader:2.0.9
+docker pull ghcr.io/sliencio/ting-reader:2.0.8
 ```
 
 ## 发布流程
