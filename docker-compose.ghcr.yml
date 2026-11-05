@@ -1,6 +1,6 @@
 services:
   ting-reader:
-    image: ghcr.io/sliencio/ting-reader:${TING_READER_VERSION:-2.0.8}
+    image: ghcr.io/sliencio/ting-reader:${TING_READER_VERSION:-2.0.9}
     container_name: ting-reader
     restart: unless-stopped
     ports:
