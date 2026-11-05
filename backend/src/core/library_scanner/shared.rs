@@ -310,9 +310,15 @@ fn parse_series_directory_name(name: &str) -> Option<ParsedSeriesDirectory> {
 
 /// Inherit only from the immediate parent of the same book/series. A library
 /// or unrelated collection directory must not supply another book's people.
-pub(crate) fn directory_book_name<'a>(name: &'a str, parent: &'a str) -> BookName<'a> {
-    let mut book = BookName::parse(name);
-    let parent = BookName::parse(parent);
+pub(crate) fn directory_book_name<'a>(
+    name: &'a str,
+    parent: &'a str,
+    config: &crate::db::models::ScraperConfig,
+) -> BookName<'a> {
+    let layout =
+        crate::core::books::text_cleaner::BookNameLayout::from_config(&config.book_name_layout);
+    let mut book = BookName::parse_with_layout(name, layout, &config.book_name_regex);
+    let parent = BookName::parse_with_layout(parent, layout, &config.book_name_regex);
     let same_title =
         canonicalize_series_title_key(book.title) == canonicalize_series_title_key(parent.title);
     let same_series = parse_series_directory_name(book.title).is_some_and(|series| {

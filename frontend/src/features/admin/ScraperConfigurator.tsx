@@ -65,6 +65,8 @@ const ScraperConfigurator: React.FC<Props> = ({ configStr, sources, onChange, li
   const autoGenerateSeries = config.auto_generate_series ?? true;
   const disableWatcher = config.disable_watcher ?? false;
   const cloudMode = config.cloud_mode ?? false;
+  const bookNameLayout: string = config.book_name_layout ?? 'auto';
+  const bookNameRegex: string = config.book_name_regex ?? '';
 
   const handleNfoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
       const newConfig: Record<string, unknown> = { ...config, nfo_writing_enabled: e.target.checked };
@@ -131,6 +133,55 @@ const ScraperConfigurator: React.FC<Props> = ({ configStr, sources, onChange, li
 
   return (
     <div className="bg-slate-50 dark:bg-slate-800 rounded-xl p-4 border border-slate-200 dark:border-slate-700">
+      {/* 目录名拆分样式：决定书名、作者、演播各自取哪一段 */}
+      {(libraryType === 'local' || libraryType === 'webdav') && (
+        <div className="mb-4 p-3 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm">
+          <div className="flex min-w-0 items-center gap-1.5 mb-2">
+            <label htmlFor="book-name-layout" className="text-sm font-bold text-slate-700 dark:text-slate-300">
+              {t('scraperConfig.bookNameLayout')}
+            </label>
+            <HelpHint text={t('scraperConfig.bookNameLayoutHelp')} />
+          </div>
+          <select
+            id="book-name-layout"
+            value={bookNameLayout}
+            onChange={event => {
+              const layout = event.target.value;
+              const next: Record<string, unknown> = {
+                ...config,
+                book_name_layout: layout,
+                book_name_regex: layout === 'custom' ? (config.book_name_regex ?? '') : '',
+              };
+              onChange(JSON.stringify(next, null, 2));
+            }}
+            className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-700 dark:text-slate-300"
+          >
+            <option value="auto">{t('scraperConfig.bookNameLayoutAuto')}</option>
+            <option value="title_author_narrator">{t('scraperConfig.bookNameLayoutTitleAuthorNarrator')}</option>
+            <option value="title_narrator_author">{t('scraperConfig.bookNameLayoutTitleNarratorAuthor')}</option>
+            <option value="title_author">{t('scraperConfig.bookNameLayoutTitleAuthor')}</option>
+            <option value="title_narrator">{t('scraperConfig.bookNameLayoutTitleNarrator')}</option>
+            <option value="title_only">{t('scraperConfig.bookNameLayoutTitleOnly')}</option>
+            <option value="custom">{t('scraperConfig.bookNameLayoutCustom')}</option>
+          </select>
+          {bookNameLayout === 'custom' && (
+            <div className="mt-2">
+              <input
+                type="text"
+                value={bookNameRegex}
+                onChange={event =>
+                  onChange(JSON.stringify({ ...config, book_name_regex: event.target.value }, null, 2))
+                }
+                placeholder={t('scraperConfig.bookNameRegexPlaceholder')}
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-mono text-slate-700 dark:text-slate-300"
+              />
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                {t('scraperConfig.bookNameRegexHelp')}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
       {/* Settings Toggles */}
       <div className="space-y-2 mb-4">
         {(libraryType === 'local' || libraryType === 'webdav') && (

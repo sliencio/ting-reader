@@ -1,6 +1,82 @@
 use super::*;
 
 #[test]
+fn respects_configured_book_name_layouts() {
+    use crate::core::books::text_cleaner::{BookName, BookNameLayout};
+    let name = "示例书名 - 张三 - 李四";
+    for (layout, title, author, narrator) in [
+        (BookNameLayout::Auto, "示例书名", Some("张三"), Some("李四")),
+        (
+            BookNameLayout::TitleAuthorNarrator,
+            "示例书名",
+            Some("张三"),
+            Some("李四"),
+        ),
+        (
+            BookNameLayout::TitleNarratorAuthor,
+            "示例书名",
+            Some("李四"),
+            Some("张三"),
+        ),
+        (BookNameLayout::TitleAuthor, "示例书名", Some("张三"), None),
+        (
+            BookNameLayout::TitleNarrator,
+            "示例书名",
+            None,
+            Some("张三"),
+        ),
+        (
+            BookNameLayout::TitleOnly,
+            "示例书名 - 张三 - 李四",
+            None,
+            None,
+        ),
+    ] {
+        let parsed = BookName::parse_with_layout(name, layout, "");
+        assert_eq!(
+            (parsed.title, parsed.author, parsed.narrator),
+            (title, author, narrator),
+            "{layout:?}"
+        );
+    }
+
+    // 带标签的写法始终按标签识别，不受位置样式影响。
+    let labelled = BookName::parse_with_layout(
+        "示例书名 - 演播：李四 - 作者：张三",
+        BookNameLayout::TitleAuthorNarrator,
+        "",
+    );
+    assert_eq!(labelled.author, Some("张三"));
+    assert_eq!(labelled.narrator, Some("李四"));
+
+    // 自定义正则：命名分组优先，其次按位置。
+    // 这条正则的顺序是「书名_演播_作者」，所以李四是演播、张三是作者。
+    let named = BookName::parse_with_layout(
+        "示例书名_张三_李四",
+        BookNameLayout::Custom,
+        r"^(?P<title>[^_]+)_(?P<narrator>[^_]+)_(?P<author>[^_]+)$",
+    );
+    assert_eq!(
+        (named.title, named.author, named.narrator),
+        ("示例书名", Some("李四"), Some("张三"))
+    );
+    let positional = BookName::parse_with_layout(
+        "示例书名_张三_李四",
+        BookNameLayout::Custom,
+        r"^([^_]+)_([^_]+)_([^_]+)$",
+    );
+    assert_eq!(
+        (positional.title, positional.author, positional.narrator),
+        ("示例书名", Some("张三"), Some("李四"))
+    );
+    // 正则写错时退回内置规则，而不是把整本书的名字弄丢。
+    let invalid =
+        BookName::parse_with_layout("示例书名-张三", BookNameLayout::Custom, "([unclosed");
+    assert_eq!(invalid.title, "示例书名");
+    assert_eq!(invalid.author, Some("张三"));
+}
+
+#[test]
 fn parses_author_and_narrator_roles_and_empty_slots_from_book_names() {
     use crate::core::books::text_cleaner::BookName;
     for (name, title, author, narrator) in [
@@ -179,7 +255,7 @@ fn series_members_inherit_parent_people_without_misreading_volume_codes() {
         ("其他书第一部", "示例-作者甲", "其他书第一部", None, None),
         ("独立书", "合集-作者甲", "独立书", None, None),
     ] {
-        let actual = directory_book_name(child, parent);
+        let actual = directory_book_name(child, parent, &Default::default());
         assert_eq!(
             (actual.title, actual.author, actual.narrator),
             (title, author, narrator)

@@ -15,6 +15,15 @@ export interface ScraperConfig {
   cloud_mode?: boolean;
   scheduled_sync_enabled?: boolean;
   scheduled_sync_interval?: 'hourly' | 'daily' | 'weekly' | 'monthly';
+  book_name_layout?:
+    | 'auto'
+    | 'title_author_narrator'
+    | 'title_narrator_author'
+    | 'title_author'
+    | 'title_narrator'
+    | 'title_only'
+    | 'custom';
+  book_name_regex?: string;
 }
 
 export interface Library {

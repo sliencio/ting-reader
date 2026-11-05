@@ -938,6 +938,19 @@ const enUS = {
     extractAudioCoverHelp:
       "The system/plugins will try to extract and save covers from audio files.",
     extractExtraChapters: "Extract extra chapters",
+    bookNameLayout: "Directory name layout",
+    bookNameLayoutHelp:
+      'How to read the title, author, and narrator from a directory name. "Auto" keeps the built-in rule (first segment author, second narrator); pick another style when names are written in the opposite order. Explicit "Author:" / "Narrator:" labels always win.',
+    bookNameLayoutAuto: "Auto (Title - Author - Narrator)",
+    bookNameLayoutTitleAuthorNarrator: "Title - Author - Narrator",
+    bookNameLayoutTitleNarratorAuthor: "Title - Narrator - Author",
+    bookNameLayoutTitleAuthor: "Title - Author",
+    bookNameLayoutTitleNarrator: "Title - Narrator",
+    bookNameLayoutTitleOnly: "Title only (skip author and narrator)",
+    bookNameLayoutCustom: "Custom regex",
+    bookNameRegexPlaceholder: "^(?P<title>.+?)\s*-\s*(?P<narrator>[^-]+)\s*-\s*(?P<author>.+)$",
+    bookNameRegexHelp:
+      "Named groups title / author / narrator are preferred. Without them, group 1 is the title, group 2 the author, and group 3 the narrator.",
     autoGenerateSeries: "Automatically create series",
     autoGenerateSeriesHelp:
       "Create and link series from folder names during scans. Disabling this keeps existing series; series declared in metadata.json are still imported.",
@@ -1473,8 +1486,8 @@ const enUS = {
       "scan.rss.completed":
         "RSS library scan completed with {{episodes}} audio items",
       "scan.audio_dirs.found": "Found {{count}} directories with audio files",
-      "scan.item.processing": "Processing ({{current}}/{{total}}): {{name}}",
-      "scan.chapter.processing": "Processing chapter {{current}}/{{total}}",
+      "scan.item.processing": "Processing ({{current}}/{{total}}, {{remaining}} left): {{name}}",
+      "scan.chapter.processing": "Processing \"{{book}}\" chapter {{current}}/{{total}}",
       "scan.auto_merge.processing": "Processing automatic merges...",
       "scan.completed":
         "Scan completed: {{total}} total, {{created}} created, {{updated}} updated, {{deleted}} deleted, {{errors}} errors",

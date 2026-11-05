@@ -64,7 +64,7 @@ impl LibraryScanner {
         let parent_name = super::webdav_parent_url(dir_url)
             .map(|parent| self.webdav_url_name(&parent))
             .unwrap_or_default();
-        let directory_metadata = directory_book_name(directory_name, &parent_name);
+        let directory_metadata = directory_book_name(directory_name, &parent_name, scraper_config);
 
         // No local path, use URL as path
         // We use the original URL as path to ensure connectivity, but StorageService needs to handle it correctly

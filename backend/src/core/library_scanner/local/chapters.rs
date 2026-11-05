@@ -157,6 +157,7 @@ impl LibraryScanner {
                     serde_json::json!({
                         "current": index + 1,
                         "total": total_files,
+                        "book": book.title.clone().unwrap_or_default(),
                     }),
                 )
                 .await;

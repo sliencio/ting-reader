@@ -31,7 +31,7 @@ impl LibraryScanner {
             .and_then(Path::file_name)
             .and_then(|name| name.to_str())
             .unwrap_or_default();
-        let name = directory_book_name(base_title, parent_name);
+        let name = directory_book_name(base_title, parent_name, scraper_config);
         final_meta.author = name.author.map(str::to_owned);
         final_meta.narrator = name.narrator.map(str::to_owned);
 

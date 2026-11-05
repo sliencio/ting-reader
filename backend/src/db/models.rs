@@ -238,6 +238,16 @@ pub struct ScraperConfig {
     /// Periodic synchronization interval: hourly, daily, weekly, or monthly.
     #[serde(default = "default_scheduled_sync_interval")]
     pub scheduled_sync_interval: String,
+    /// 目录名里书名的拆分样式，取值：
+    /// "auto"（默认，沿用内置规则）、"title_only"、"title_author_narrator"、
+    /// "title_narrator_author"、"title_author"、"title_narrator"、"custom"。
+    #[serde(default = "default_book_name_layout")]
+    pub book_name_layout: String,
+    /// 自定义命名正则，仅在 `book_name_layout = "custom"` 时使用。
+    /// 优先取命名分组 `title` / `author` / `narrator`；
+    /// 没有命名分组时按位置取：第 1 组书名、第 2 组作者、第 3 组演播。
+    #[serde(default)]
+    pub book_name_regex: String,
 }
 
 impl ScraperConfig {
@@ -332,6 +342,8 @@ impl Default for ScraperConfig {
             cloud_mode: false,
             scheduled_sync_enabled: false,
             scheduled_sync_interval: default_scheduled_sync_interval(),
+            book_name_layout: default_book_name_layout(),
+            book_name_regex: String::new(),
         }
     }
 }
@@ -390,6 +402,10 @@ fn default_metadata_priority() -> Vec<String> {
 
 fn default_scheduled_sync_interval() -> String {
     "daily".to_string()
+}
+
+fn default_book_name_layout() -> String {
+    "auto".to_string()
 }
 
 /// Series record in the database

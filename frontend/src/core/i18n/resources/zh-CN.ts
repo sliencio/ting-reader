@@ -894,6 +894,19 @@ const zhCN = {
     extractAudioCover: "提取音频封面",
     extractAudioCoverHelp: "开启后，系统/插件将尝试从音频文件中提取并保存封面",
     extractExtraChapters: "提取番外章节",
+    bookNameLayout: "目录名拆分方式",
+    bookNameLayoutHelp:
+      "扫描时按选定样式从目录名中取书名、作者、演播。选「自动」沿用内置规则（第一段作者、第二段演播）；名字写法相反时请选对应样式。带「作者：」「演播：」标签的始终按标签识别。",
+    bookNameLayoutAuto: "自动（书名 - 作者 - 演播）",
+    bookNameLayoutTitleAuthorNarrator: "书名 - 作者 - 演播",
+    bookNameLayoutTitleNarratorAuthor: "书名 - 演播 - 作者",
+    bookNameLayoutTitleAuthor: "书名 - 作者",
+    bookNameLayoutTitleNarrator: "书名 - 演播",
+    bookNameLayoutTitleOnly: "只取书名（不解析作者和演播）",
+    bookNameLayoutCustom: "自定义正则",
+    bookNameRegexPlaceholder: "^(?P<title>.+?)\s*-\s*(?P<narrator>[^-]+)\s*-\s*(?P<author>.+)$",
+    bookNameRegexHelp:
+      "推荐使用命名分组 title / author / narrator。没有命名分组时按位置取：第 1 组书名、第 2 组作者、第 3 组演播。",
     autoGenerateSeries: "自动生成系列",
     autoGenerateSeriesHelp:
       "扫描时根据文件夹名自动创建并关联系列。关闭后保留已有系列，metadata.json 中的系列信息仍照常导入。",
@@ -1388,8 +1401,8 @@ const zhCN = {
       "scan.rss.fetched": "RSS 获取完成，发现 {{count}} 个音频条目",
       "scan.rss.completed": "RSS 库扫描完成，发现 {{episodes}} 个音频条目",
       "scan.audio_dirs.found": "找到 {{count}} 个包含音频文件的目录",
-      "scan.item.processing": "处理中 ({{current}}/{{total}})：{{name}}",
-      "scan.chapter.processing": "处理章节 {{current}}/{{total}}",
+      "scan.item.processing": "处理中 ({{current}}/{{total}}，还剩 {{remaining}} 本)：{{name}}",
+      "scan.chapter.processing": "正在处理「{{book}}」章节 {{current}}/{{total}}",
       "scan.auto_merge.processing": "正在处理自动合并...",
       "scan.completed":
         "扫描完成：共 {{total}} 本，新增 {{created}} 本，更新 {{updated}} 本，删除 {{deleted}} 本，错误 {{errors}} 个",

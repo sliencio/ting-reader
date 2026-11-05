@@ -322,6 +322,7 @@ impl LibraryScanner {
                     serde_json::json!({
                         "current": processed_count,
                         "total": total_groups,
+                        "remaining": total_groups.saturating_sub(processed_count),
                         "name": dir_name,
                     }),
                 )

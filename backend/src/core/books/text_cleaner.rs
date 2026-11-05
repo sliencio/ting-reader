@@ -22,6 +22,43 @@ pub(crate) fn book_title_from_name(name: &str) -> &str {
     BookName::parse(name).title
 }
 
+/// 目录名里书名、作者、演播的排布方式。
+///
+/// 云盘书库的命名习惯并不统一：有的写「书名 - 作者 - 演播」，有的反过来，
+/// 还有只写作者或只写演播的。内置规则固定把第一段当作者、第二段当演播，
+/// 遇到反过来的写法就会把两个人装反，所以这里允许按存储库配置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BookNameLayout {
+    /// 沿用内置规则（第一段作者、第二段演播）
+    Auto,
+    /// 只取书名，不解析作者和演播
+    TitleOnly,
+    /// 书名 - 作者 - 演播
+    TitleAuthorNarrator,
+    /// 书名 - 演播 - 作者
+    TitleNarratorAuthor,
+    /// 书名 - 作者
+    TitleAuthor,
+    /// 书名 - 演播
+    TitleNarrator,
+    /// 用自定义正则解析
+    Custom,
+}
+
+impl BookNameLayout {
+    pub fn from_config(value: &str) -> Self {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "title_only" => Self::TitleOnly,
+            "title_author_narrator" => Self::TitleAuthorNarrator,
+            "title_narrator_author" => Self::TitleNarratorAuthor,
+            "title_author" => Self::TitleAuthor,
+            "title_narrator" => Self::TitleNarrator,
+            "custom" => Self::Custom,
+            _ => Self::Auto,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct BookName<'a> {
     pub title: &'a str,
@@ -33,13 +70,109 @@ impl<'a> BookName<'a> {
     /// Title-Author[/Narrator]. A single unlabeled name defaults to author.
     /// Fullwidth slash and a second hyphen work in actual directory names.
     pub fn parse(name: &'a str) -> Self {
-        let name = name.trim();
-        let name = name
-            .split(['|', '丨', '｜'])
-            .next()
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .unwrap_or(name);
+        Self::parse_with_layout(name, BookNameLayout::Auto, "")
+    }
+
+    /// 按存储库配置的命名样式解析。
+    pub fn parse_with_layout(name: &'a str, layout: BookNameLayout, custom_regex: &str) -> Self {
+        match layout {
+            BookNameLayout::Auto => Self::parse_auto(name),
+            BookNameLayout::TitleOnly => Self {
+                title: strip_description(name),
+                author: None,
+                narrator: None,
+            },
+            BookNameLayout::Custom => {
+                Self::parse_custom(name, custom_regex).unwrap_or_else(|| Self::parse_auto(name))
+            }
+            _ => Self::parse_explicit(name, layout),
+        }
+    }
+
+    /// 按自定义正则解析。优先取命名分组，其次按位置取 1/2/3 组。
+    fn parse_custom(name: &'a str, pattern: &str) -> Option<Self> {
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            return None;
+        }
+        let regex = Regex::new(pattern).ok()?;
+        let caps = regex.captures(name.trim())?;
+        let group = |named: &str, position: usize| {
+            caps.name(named)
+                .or_else(|| caps.get(position))
+                .map(|m| m.as_str().trim())
+                .filter(|value| !value.is_empty())
+        };
+        let title = group("title", 1)?;
+        Some(Self {
+            title,
+            author: group("author", 2),
+            narrator: group("narrator", 3),
+        })
+    }
+
+    /// 按显式样式切分：书名在第一个分隔符之前，其余按顺序是演播/作者。
+    ///
+    /// 带显式标签的（如「演播：张三」）一律按标签归属，不受样式影响——
+    /// 那是写名字的人主动标注的，比位置推断可靠得多。
+    fn parse_explicit(name: &'a str, layout: BookNameLayout) -> Self {
+        let name = strip_description(name);
+        let Some((title, rest)) = split_first_separator(name) else {
+            return Self {
+                title: name,
+                author: None,
+                narrator: None,
+            };
+        };
+        let mut parsed = Self {
+            title,
+            author: None,
+            narrator: None,
+        };
+        let mut positional = Vec::new();
+        for token in rest.split(['/', '／', '-', '－', '—']) {
+            let token = token.trim();
+            if token.is_empty() {
+                continue;
+            }
+            let (label, value) = token
+                .split_once([':', '：'])
+                .map_or(("", token), |(label, value)| (label.trim(), value.trim()));
+            if value.is_empty() {
+                continue;
+            }
+            match label {
+                "作者" | "原著" | "author" => parsed.author = Some(value),
+                "演播" | "主播" | "播讲" | "narrator" => parsed.narrator = Some(value),
+                _ => positional.push(value),
+            }
+        }
+        for (index, value) in positional.into_iter().enumerate() {
+            let slot = match (layout, index) {
+                (BookNameLayout::TitleNarratorAuthor, 0) => 1,
+                (BookNameLayout::TitleNarratorAuthor, 1) => 0,
+                (_, 0) => 0,
+                (_, 1) => 1,
+                _ => break,
+            };
+            if slot == 0 && parsed.author.is_none() {
+                parsed.author = Some(value);
+            } else if slot == 1 && parsed.narrator.is_none() {
+                parsed.narrator = Some(value);
+            }
+        }
+        if layout == BookNameLayout::TitleAuthor && parsed.narrator.is_some() {
+            parsed.narrator = None;
+        }
+        if layout == BookNameLayout::TitleNarrator {
+            parsed.narrator = parsed.author.take();
+        }
+        parsed
+    }
+
+    /// 内置规则：Title-Author[/Narrator]，单独一个名字默认是作者。
+    fn parse_auto(name: &'a str) -> Self {
+        let name = strip_description(name);
         let mut parsed = Self {
             title: name,
             author: None,
@@ -86,6 +219,39 @@ impl<'a> BookName<'a> {
         }
         parsed
     }
+}
+
+/// 去掉「书名 | 简介」里的简介部分。
+fn strip_description(name: &str) -> &str {
+    let name = name.trim();
+    name.split(['|', '丨', '｜'])
+        .next()
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(name)
+}
+
+/// 找出第一个可作分隔符的连字符，要求两侧都有内容。
+///
+/// 直接找第一个 `-` 会把「书名-2」这类带序号的标题切坏，也会被
+/// 「2024-2025」这种年份目录误伤，因此跳过紧邻数字的分隔符。
+fn split_first_separator(name: &str) -> Option<(&str, &str)> {
+    for (index, _) in name.match_indices(['-', '－', '—']) {
+        let title = name[..index].trim();
+        let rest = name[index..].trim_start_matches(['-', '－', '—']).trim();
+        if title.is_empty() || rest.is_empty() {
+            continue;
+        }
+        if is_volume_marker(rest.split(['/', '／', '-', '－', '—']).next().unwrap_or("")) {
+            continue;
+        }
+        // 纯数字的尾段属于标题（如「书名-2」），不是作者。
+        if rest.chars().all(|ch| ch.is_numeric()) {
+            continue;
+        }
+        return Some((title, rest));
+    }
+    None
 }
 
 fn is_volume_marker(value: &str) -> bool {
