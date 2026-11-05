@@ -203,8 +203,8 @@ impl LibraryScanner {
                             || status.is_server_error();
                         if retryable && attempt < max_attempts {
                             // 429 优先尊重服务端的 Retry-After。
-                            let wait = retry_after_from(&res)
-                                .unwrap_or_else(|| backoff_delay(attempt));
+                            let wait =
+                                retry_after_from(&res).unwrap_or_else(|| backoff_delay(attempt));
                             warn!(
                                 url = %current_url,
                                 status = %status,
@@ -258,137 +258,125 @@ impl LibraryScanner {
                 }
 
                 for (item_url, is_dir, last_mod, etag) in items {
-                            // Avoid re-processing current_url (PROPFIND returns self)
-                            // We need to handle trailing slashes carefully
-                            let item_norm = item_url.trim_end_matches('/');
-                            let current_norm = current_url.trim_end_matches('/');
+                    // Avoid re-processing current_url (PROPFIND returns self)
+                    // We need to handle trailing slashes carefully
+                    let item_norm = item_url.trim_end_matches('/');
+                    let current_norm = current_url.trim_end_matches('/');
 
-                            if item_norm == current_norm {
-                                continue;
-                            }
+                    if item_norm == current_norm {
+                        continue;
+                    }
 
-                            if is_dir {
-                                // Only collection ETags are used to reuse a subtree.
-                                // Directory modification times commonly describe the
-                                // collection object itself and may not change when a
-                                // descendant is updated.
-                                let validator = etag.clone();
-                                let cached = if !mode.is_full() {
-                                    validator.as_ref().and_then(|validator| {
-                                        cached_dirs
-                                            .get(&item_url)
-                                            .filter(|state| state.fingerprint == *validator)
+                    if is_dir {
+                        // Only collection ETags are used to reuse a subtree.
+                        // Directory modification times commonly describe the
+                        // collection object itself and may not change when a
+                        // descendant is updated.
+                        let validator = etag.clone();
+                        let cached = if !mode.is_full() {
+                            validator.as_ref().and_then(|validator| {
+                                cached_dirs
+                                    .get(&item_url)
+                                    .filter(|state| state.fingerprint == *validator)
+                            })
+                        } else {
+                            None
+                        };
+
+                        if cached.is_some() {
+                            let normalized_dir = item_url.trim_end_matches('/');
+                            let nested_prefix = format!("{}/", normalized_dir);
+                            cache_states.extend(
+                                cached_dirs
+                                    .values()
+                                    .filter(|state| {
+                                        state
+                                            .entry_path
+                                            .trim_end_matches('/')
+                                            .starts_with(&nested_prefix)
                                     })
-                                } else {
-                                    None
-                                };
-
-                                if cached.is_some() {
-                                    let normalized_dir = item_url.trim_end_matches('/');
-                                    let nested_prefix = format!("{}/", normalized_dir);
-                                    cache_states.extend(
-                                        cached_dirs
-                                            .values()
-                                            .filter(|state| {
-                                                state
-                                                    .entry_path
-                                                    .trim_end_matches('/')
-                                                    .starts_with(&nested_prefix)
-                                            })
-                                            .cloned(),
-                                    );
-                                    for cached_file in cached_files.values().filter(|state| {
-                                        state.parent_path.as_deref().is_some_and(|parent| {
-                                            let normalized_parent = parent.trim_end_matches('/');
-                                            normalized_parent == normalized_dir
-                                                || normalized_parent.starts_with(&nested_prefix)
-                                        })
-                                    }) {
-                                        cache_states.push(cached_file.clone());
-                                        let modified =
-                                            cached_file.modified_at.as_deref().and_then(|value| {
-                                                chrono::DateTime::parse_from_rfc2822(value)
+                                    .cloned(),
+                            );
+                            for cached_file in cached_files.values().filter(|state| {
+                                state.parent_path.as_deref().is_some_and(|parent| {
+                                    let normalized_parent = parent.trim_end_matches('/');
+                                    normalized_parent == normalized_dir
+                                        || normalized_parent.starts_with(&nested_prefix)
+                                })
+                            }) {
+                                cache_states.push(cached_file.clone());
+                                let modified =
+                                    cached_file.modified_at.as_deref().and_then(|value| {
+                                        chrono::DateTime::parse_from_rfc2822(value)
+                                            .map(|dt| dt.with_timezone(&chrono::Utc))
+                                            .ok()
+                                            .or_else(|| {
+                                                chrono::DateTime::parse_from_rfc3339(value)
                                                     .map(|dt| dt.with_timezone(&chrono::Utc))
                                                     .ok()
-                                                    .or_else(|| {
-                                                        chrono::DateTime::parse_from_rfc3339(value)
-                                                            .map(|dt| {
-                                                                dt.with_timezone(&chrono::Utc)
-                                                            })
-                                                            .ok()
-                                                    })
-                                            });
-                                        let validator = cached_file
-                                            .etag
-                                            .clone()
-                                            .or_else(|| cached_file.modified_at.clone());
-                                        files.insert(
-                                            cached_file.entry_path.clone(),
-                                            (modified, validator),
-                                        );
-                                    }
-                                } else if !visited_dirs.contains(&item_url) {
-                                    visited_dirs.insert(item_url.clone());
-                                    queue.push_back(item_url.clone());
-                                }
+                                            })
+                                    });
+                                let validator = cached_file
+                                    .etag
+                                    .clone()
+                                    .or_else(|| cached_file.modified_at.clone());
+                                files.insert(cached_file.entry_path.clone(), (modified, validator));
+                            }
+                        } else if !visited_dirs.contains(&item_url) {
+                            visited_dirs.insert(item_url.clone());
+                            queue.push_back(item_url.clone());
+                        }
 
-                                if let Some(validator) = validator {
-                                    let mut state = LibraryScanState::new(
-                                        &library.id,
-                                        &item_url,
-                                        "webdav_dir",
-                                        validator,
-                                    );
-                                    state.modified_at = last_mod;
-                                    state.etag = etag;
-                                    state.parent_path = Some(current_url.clone());
-                                    cache_states.push(state);
-                                }
-                            } else {
-                                // Parse last modified - try multiple formats
-                                let raw_last_mod = last_mod.clone();
-                                let dt = if let Some(lm) = raw_last_mod.as_deref() {
-                                    // Try RFC 2822 first (e.g., "Mon, 15 Aug 2005 15:52:01 +0000")
-                                    chrono::DateTime::parse_from_rfc2822(lm)
+                        if let Some(validator) = validator {
+                            let mut state = LibraryScanState::new(
+                                &library.id,
+                                &item_url,
+                                "webdav_dir",
+                                validator,
+                            );
+                            state.modified_at = last_mod;
+                            state.etag = etag;
+                            state.parent_path = Some(current_url.clone());
+                            cache_states.push(state);
+                        }
+                    } else {
+                        // Parse last modified - try multiple formats
+                        let raw_last_mod = last_mod.clone();
+                        let dt = if let Some(lm) = raw_last_mod.as_deref() {
+                            // Try RFC 2822 first (e.g., "Mon, 15 Aug 2005 15:52:01 +0000")
+                            chrono::DateTime::parse_from_rfc2822(lm)
+                                .map(|dt| dt.with_timezone(&chrono::Utc))
+                                .ok()
+                                .or_else(|| {
+                                    // Try RFC 3339 / ISO 8601 (e.g., "2005-08-15T15:52:01Z")
+                                    chrono::DateTime::parse_from_rfc3339(lm)
                                         .map(|dt| dt.with_timezone(&chrono::Utc))
                                         .ok()
-                                        .or_else(|| {
-                                            // Try RFC 3339 / ISO 8601 (e.g., "2005-08-15T15:52:01Z")
-                                            chrono::DateTime::parse_from_rfc3339(lm)
-                                                .map(|dt| dt.with_timezone(&chrono::Utc))
-                                                .ok()
-                                        })
-                                        .or_else(|| {
-                                            // Log parsing failure for debugging
-                                            debug!(
-                                                "Failed to parse WebDAV last modified time: {}",
-                                                lm
-                                            );
-                                            None
-                                        })
-                                } else {
+                                })
+                                .or_else(|| {
+                                    // Log parsing failure for debugging
+                                    debug!("Failed to parse WebDAV last modified time: {}", lm);
                                     None
-                                };
-                                let stable_validator = etag.clone().or_else(|| last_mod.clone());
-                                files.insert(item_url.clone(), (dt, stable_validator.clone()));
-                                let validator =
-                                    stable_validator.clone().unwrap_or_else(|| item_url.clone());
-                                let mut state = LibraryScanState::new(
-                                    &library.id,
-                                    &item_url,
-                                    "webdav_file",
-                                    validator,
-                                );
-                                state.modified_at = raw_last_mod;
-                                state.etag = etag;
-                                state.parent_path = Some(current_url.clone());
-                                cache_states.push(state);
-                            }
-                        }
-                } else {
-                    failed_dirs += 1;
-                    listing_complete = false;
-                    warn!(
+                                })
+                        } else {
+                            None
+                        };
+                        let stable_validator = etag.clone().or_else(|| last_mod.clone());
+                        files.insert(item_url.clone(), (dt, stable_validator.clone()));
+                        let validator =
+                            stable_validator.clone().unwrap_or_else(|| item_url.clone());
+                        let mut state =
+                            LibraryScanState::new(&library.id, &item_url, "webdav_file", validator);
+                        state.modified_at = raw_last_mod;
+                        state.etag = etag;
+                        state.parent_path = Some(current_url.clone());
+                        cache_states.push(state);
+                    }
+                }
+            } else {
+                failed_dirs += 1;
+                listing_complete = false;
+                warn!(
                         url = %current_url,
                         status = %res.status(),
                     "WebDAV 目录返回非成功状态，跳过该目录"

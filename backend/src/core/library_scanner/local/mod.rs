@@ -783,7 +783,10 @@ fn coalesce_local_range_directory_groups(
                     files = child_files.len(),
                     "区间目录已摊平到父目录"
                 );
-                dir_groups.entry(parent).or_default().append(&mut child_files);
+                dir_groups
+                    .entry(parent)
+                    .or_default()
+                    .append(&mut child_files);
             }
         }
     }
