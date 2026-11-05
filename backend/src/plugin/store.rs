@@ -245,12 +245,29 @@ pub async fn download_plugin(
     let mut redirect_count = 0_usize;
     let response = loop {
         let resolved = validate_plugin_download_target(&current_url).await?;
-        let response = client.get(current_url.clone()).send().await.map_err(|e| {
-            let e = e.without_url();
-            let message = format!("Failed to download plugin: {e}");
-            TingError::network(NetworkErrorKind::Transport, "download_plugin", message)
-                .with_source(anyhow::anyhow!(e))
+        // Bind the request to the addresses validated above. The shared client resolves the
+        // host on its own and may reuse a pooled connection opened for an earlier answer, so
+        // comparing its remote address against this lookup fails whenever the two DNS answers
+        // differ (rotating CDN records, short TTLs).
+        let hop_client = build_pinned_client(client, &current_url, &resolved).map_err(|e| {
+            let message = format!("Failed to prepare plugin download client: {e}");
+            TingError::network(
+                NetworkErrorKind::Transport,
+                "download_plugin::network",
+                message,
+            )
+            .with_source(anyhow::anyhow!(e))
         })?;
+        let response = hop_client
+            .get(current_url.clone())
+            .send()
+            .await
+            .map_err(|e| {
+                let e = e.without_url();
+                let message = format!("Failed to download plugin: {e}");
+                TingError::network(NetworkErrorKind::Transport, "download_plugin", message)
+                    .with_source(anyhow::anyhow!(e))
+            })?;
         let remote = response.remote_addr().ok_or_else(|| {
             TingError::network(
                 NetworkErrorKind::Transport,
@@ -259,10 +276,25 @@ pub async fn download_plugin(
             )
         })?;
         if !resolved.iter().any(|address| address.ip() == remote.ip()) {
+            let expected = resolved
+                .iter()
+                .map(|address| address.ip().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            tracing::warn!(
+                url = %redacted_download_url(current_url.as_str()),
+                connected = %remote.ip(),
+                expected = %expected,
+                "Plugin download connected to an unexpected address"
+            );
             return Err(TingError::network(
                 NetworkErrorKind::Transport,
                 "download_plugin::network",
-                "Plugin download connected to an unexpected address".to_string(),
+                format!(
+                    "Plugin download connected to an unexpected address: {} (expected {})",
+                    remote.ip(),
+                    expected
+                ),
             ));
         }
 
@@ -388,6 +420,33 @@ pub async fn download_plugin(
     }
 
     Ok(temp_path)
+}
+
+/// Build a client whose connections are restricted to `resolved`.
+///
+/// Hostnames are pinned with `resolve_to_addrs` so the request cannot connect to an address
+/// that was never validated, and cannot reuse a pooled connection from an earlier lookup.
+/// IP-literal URLs have nothing to resolve, so the shared client is reused as is.
+fn build_pinned_client(
+    base: &reqwest::Client,
+    url: &Url,
+    resolved: &[std::net::SocketAddr],
+) -> std::result::Result<reqwest::Client, reqwest::Error> {
+    let Some(host) = url.host_str() else {
+        return Ok(base.clone());
+    };
+    let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
+    if normalized_host.parse::<IpAddr>().is_ok() {
+        return Ok(base.clone());
+    }
+    reqwest::Client::builder()
+        .user_agent("TingReader/1.0")
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .no_proxy()
+        .resolve_to_addrs(&normalized_host, resolved)
+        .build()
 }
 
 async fn validate_plugin_download_target(url: &Url) -> Result<Vec<std::net::SocketAddr>> {
