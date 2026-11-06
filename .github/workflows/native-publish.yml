@@ -2,6 +2,12 @@ name: Native FPK Build and Release
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: '手动发布时填要发布的现有版本标签（例如 v2.0.9）；留空则只构建产物、不发布'
+        type: string
+        required: false
+        default: ''
   push:
     tags:
       - 'v*'
@@ -13,7 +19,7 @@ env:
   TING_PLUGIN_STORE_VERSION: "2.0.2"
 
 concurrency:
-  group: native-fpk-${{ github.ref }}
+  group: native-fpk-${{ inputs.release_tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -46,7 +52,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.release_tag || github.sha }}
           fetch-depth: 0
 
       - name: Configure Git workspace for container steps
@@ -56,14 +62,25 @@ jobs:
 
       - name: Resolve release context
         id: release_context
+        env:
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           SOURCE_VERSION="$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' backend/Cargo.toml)"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ -n "$INPUT_RELEASE_TAG" ]; then
+            # 手动补发：按指定标签发布，源码版本必须与标签一致。
+            TARGET="formal"
+            RELEASE_TAG="$INPUT_RELEASE_TAG"
+            VERSION="${RELEASE_TAG#v}"
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)"
+          elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # 手动运行且没指定标签：只构建产物，不发布。
             TARGET="build"
             VERSION="$SOURCE_VERSION"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
             TARGET="formal"
+            RELEASE_TAG="$GITHUB_REF_NAME"
             VERSION="${GITHUB_REF_NAME#v}"
           else
             echo "Unsupported release trigger: ${{ github.event_name }} / ${{ github.ref_type }}"
@@ -71,19 +88,20 @@ jobs:
           fi
 
           if [ "$TARGET" = formal ]; then
-            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
             if [ "$SOURCE_VERSION" != "$VERSION" ]; then
               echo "::error::Source version $SOURCE_VERSION does not match release version $VERSION"
               exit 1
             fi
-            PREVIOUS=$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -Fxv "$GITHUB_REF_NAME" | sort -V | tail -n 1 || true)
-            if [ -n "$PREVIOUS" ] && [ "$(printf '%s\n' "$PREVIOUS" "$GITHUB_REF_NAME" | sort -V | tail -n 1)" != "$GITHUB_REF_NAME" ]; then
+            PREVIOUS=$(git tag --list 'v[0-9]*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -Fxv "$RELEASE_TAG" | sort -V | tail -n 1 || true)
+            if [ -n "$PREVIOUS" ] && [ "$(printf '%s\n' "$PREVIOUS" "$RELEASE_TAG" | sort -V | tail -n 1)" != "$RELEASE_TAG" ]; then
               echo "::error::发布版本必须高于历史版本"
               exit 1
             fi
           fi
 
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "RELEASE_TAG=$RELEASE_TAG" >> $GITHUB_ENV
           echo "target=$TARGET" >> $GITHUB_OUTPUT
           echo "Resolved $TARGET build for version $VERSION"
           echo "Source commit: $(git rev-parse HEAD)"
@@ -292,12 +310,17 @@ jobs:
   release:
     name: 发布新版本 FPK
     needs: native
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # tag 推送，或手动运行时指定了 release_tag
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref_name }}
       - uses: actions/download-artifact@v4
         with:
           pattern: native-fpk-*
@@ -305,7 +328,7 @@ jobs:
           merge-multiple: true
       - name: 读取本版更新说明
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
           awk -v header="## [${VERSION#v}]" '
@@ -319,9 +342,15 @@ jobs:
       - name: 创建独立版本发布
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" dist/*.fpk \
-            --verify-tag \
-            --title "Ting Reader 服务端 $RELEASE_TAG" \
-            --notes-file RELEASE_NOTES.md
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" > /dev/null 2>&1; then
+            # 已存在的版本只补传附件，不覆盖历史说明和标签。
+            gh release upload "$RELEASE_TAG" dist/*.fpk --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/*.fpk \
+              --verify-tag \
+              --title "Ting Reader 服务端 $RELEASE_TAG" \
+              --notes-file RELEASE_NOTES.md
+          fi
