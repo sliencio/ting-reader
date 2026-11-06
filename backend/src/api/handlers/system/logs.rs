@@ -106,6 +106,82 @@ fn read_api_logs(data_dir: &StdPath) -> Vec<LogEntry> {
     logs
 }
 
+/// 任务还没上报进度时的可读描述。
+///
+/// 以前这里直接回退到把整个 payload JSON 塞进日志，用户看到的就是一坨
+/// `{"Custom":{"task_type":"library_scan","data":{...}}}`。改为按任务类型
+/// 生成一句能看懂的话，取不到细节时再退回任务名称。
+fn pending_task_message(
+    task: &crate::db::models::TaskRecord,
+    library_names: &std::collections::HashMap<String, String>,
+) -> (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<serde_json::Value>,
+) {
+    use crate::core::task_queue::TaskPayload;
+
+    let payload = task
+        .payload
+        .as_ref()
+        .and_then(|value| serde_json::from_str::<TaskPayload>(value).ok());
+
+    if let Some(TaskPayload::Custom { task_type, data }) = payload {
+        let library_name = data
+            .get("library_id")
+            .and_then(|value| value.as_str())
+            .and_then(|id| library_names.get(id))
+            .cloned();
+        match (task_type.as_str(), library_name) {
+            ("library_scan", Some(name)) => {
+                // 只有真正在排队/执行中的任务才用「等待中 / 正在准备」；
+                // 已结束但没写下结果的旧任务不能再说它在等。
+                let category = match task.status.as_str() {
+                    "running" => Some("scan.running"),
+                    "queued" => Some("scan.queued"),
+                    _ => None,
+                };
+                if let Some(category) = category {
+                    let params = serde_json::json!({
+                        "library_name": name,
+                        "mode": data.get("mode").and_then(|value| value.as_str()).unwrap_or("incremental"),
+                    });
+                    return (
+                        String::new(),
+                        None,
+                        Some(category.to_string()),
+                        Some(params),
+                    );
+                }
+            }
+            ("write_metadata", _) => {
+                return (
+                    String::new(),
+                    None,
+                    Some("metadata.task.running".to_string()),
+                    Some(serde_json::json!({})),
+                );
+            }
+            (other, _) => {
+                return (
+                    String::new(),
+                    None,
+                    Some("task.execute_with_name".to_string()),
+                    Some(serde_json::json!({ "task_name": other })),
+                );
+            }
+        }
+    }
+
+    (
+        String::new(),
+        None,
+        Some("task.execute_with_name".to_string()),
+        Some(serde_json::json!({ "task_name": task.task_type })),
+    )
+}
+
 /// Handler for GET /api/v1/system/logs - Get system logs
 pub async fn get_system_logs(
     State(state): State<AppState>,
@@ -122,6 +198,16 @@ pub async fn get_system_logs(
 
     // Get all tasks
     let tasks = state.task_queue.list_tasks().await.unwrap_or_default();
+    // 排队中的扫描任务还没写过进度消息，此前会退回把整段 payload JSON 直接
+    // 显示在日志里。这里先取出存储库名称，让等待状态也能说清「在等哪个库」。
+    let library_names: std::collections::HashMap<String, String> = state
+        .library_repo
+        .find_all()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|library| (library.id, library.name))
+        .collect();
 
     let filtered_logs = tokio::task::spawn_blocking(move || {
         let all_logs = read_api_logs(&data_dir);
@@ -167,30 +253,14 @@ pub async fn get_system_logs(
                     Some(key),
                     message_params,
                 )
-            } else if let Some(msg) = task.message {
+            } else if let Some(msg) = task.message.clone() {
                 if !msg.is_empty() {
                     (msg.clone(), Some(msg), None, None)
-                } else if let Some(payload) = task.payload {
-                    let params = serde_json::json!({ "payload": payload });
-                    (
-                        String::new(),
-                        None,
-                        Some("task.execute_with_payload".to_string()),
-                        Some(params),
-                    )
                 } else {
-                    (String::new(), None, Some("task.execute".to_string()), None)
+                    pending_task_message(&task, &library_names)
                 }
-            } else if let Some(payload) = task.payload {
-                let params = serde_json::json!({ "payload": payload });
-                (
-                    String::new(),
-                    None,
-                    Some("task.execute_with_payload".to_string()),
-                    Some(params),
-                )
             } else {
-                (String::new(), None, Some("task.execute".to_string()), None)
+                pending_task_message(&task, &library_names)
             };
 
             let timestamp = if task.status == "running" {

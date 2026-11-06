@@ -10,6 +10,9 @@ impl LibraryScanner {
     ) -> Result<(String, ScanStatus)> {
         let LocalBookProcessingContext {
             library_id,
+            library_name,
+            item_current,
+            item_total,
             dir,
             files,
             last_scanned,
@@ -55,6 +58,9 @@ impl LibraryScanner {
                                     json_chapters: None,
                                     chapter_title_template: None,
                                     chapter_title_overrides: None,
+                                    library_name,
+                                    item_current,
+                                    item_total,
                                 },
                             )
                             .await?;
@@ -287,6 +293,9 @@ impl LibraryScanner {
                     } else {
                         Some(chapter_titles.as_slice())
                     },
+                    library_name,
+                    item_current,
+                    item_total,
                 },
             )
             .await?;

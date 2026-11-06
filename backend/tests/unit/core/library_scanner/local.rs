@@ -50,6 +50,7 @@ async fn parent_series_people_reach_saved_volumes_and_numeric_chapter_indexes() 
         let result = scanner
             .scan_local_library(LocalLibraryScanContext {
                 library_id: &library.id,
+                library_name: "Test",
                 path: &root,
                 task_id: None,
                 last_scanned: None,
@@ -166,6 +167,7 @@ async fn local_metadata_json_series_import_ignores_directory_series_setting() {
         let result = scanner
             .scan_local_library(LocalLibraryScanContext {
                 library_id: &library.id,
+                library_name: "Test",
                 path: &root,
                 task_id: None,
                 last_scanned: None,
@@ -241,6 +243,7 @@ async fn full_scan_saves_clean_directory_titles_and_all_completed_range_chapters
         let result = scanner
             .scan_local_library(LocalLibraryScanContext {
                 library_id: &library.id,
+                library_name: "Test",
                 path: &root,
                 task_id: None,
                 last_scanned: None,

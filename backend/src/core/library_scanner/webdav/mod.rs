@@ -42,8 +42,15 @@ impl LibraryScanner {
             start_time: Some(std::time::Instant::now()),
             ..Default::default()
         };
-        self.update_progress_key(task_id, "scan.webdav.scanning", serde_json::json!({}))
-            .await;
+        self.update_progress_key(
+            task_id,
+            "scan.webdav.scanning",
+            serde_json::json!({
+                "library_name": library.name,
+                "mode": mode.as_str(),
+            }),
+        )
+        .await;
 
         // 1. List files recursively
         let files = self.list_webdav_files(library, task_id, mode).await?;
@@ -80,7 +87,11 @@ impl LibraryScanner {
         self.update_progress_key(
             task_id,
             "scan.audio_dirs.found",
-            serde_json::json!({ "count": dir_groups.len() }),
+            serde_json::json!({
+                "library_name": library.name,
+                "mode": mode.as_str(),
+                "count": dir_groups.len(),
+            }),
         )
         .await;
 
@@ -154,6 +165,7 @@ impl LibraryScanner {
                     task_id,
                     "scan.item.processing",
                     serde_json::json!({
+                        "library_name": library.name,
                         "current": processed_count,
                         "total": total_groups,
                         "remaining": total_groups.saturating_sub(processed_count),

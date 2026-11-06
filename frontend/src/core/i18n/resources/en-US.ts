@@ -1466,6 +1466,7 @@ const enUS = {
         "Webhook configuration deleted: {{webhook_name}}",
       "task.execute": "Run task",
       "task.execute_with_payload": "Run task: {{payload}}",
+      "task.execute_with_name": "Running: {{task_name}}",
       "task.recovery.started": "Restoring unfinished tasks from database",
       "task.recovery.completed": "Task recovery completed: {{count}}",
       "task.recovery.failed": "Task recovery failed: {{error}}",
@@ -1479,15 +1480,23 @@ const enUS = {
       "task.max_retries_failed": "Task failed after max retries: {{task_id}}",
       "task.timed_out": "Task timed out after {{timeout_secs}}s",
       "scan.started": "Started scanning library: {{path}}",
-      "scan.local.scanning": "Scanning local directory...",
-      "scan.webdav.scanning": "Scanning WebDAV directory...",
-      "scan.rss.fetching": "Fetching RSS: {{url}}",
+      "scan.queued": "Queued: scan of \"{{library_name}}\" is waiting to start",
+      "scan.running": "Scanning \"{{library_name}}\"; preparing…",
+      "scan.mode.full": "full sync",
+      "scan.mode.incremental": "incremental sync",
+      "scan.local.scanning": "\"{{library_name}}\": scanning local directory…",
+      "scan.webdav.scanning":
+        "\"{{library_name}}\": reading WebDAV directory listing…",
+      "scan.rss.fetching": "\"{{library_name}}\": fetching RSS: {{url}}",
       "scan.rss.fetched": "RSS fetched, found {{count}} audio items",
       "scan.rss.completed":
         "RSS library scan completed with {{episodes}} audio items",
-      "scan.audio_dirs.found": "Found {{count}} directories with audio files",
-      "scan.item.processing": "Processing ({{current}}/{{total}}, {{remaining}} left): {{name}}",
-      "scan.chapter.processing": "Processing \"{{book}}\" chapter {{current}}/{{total}}",
+      "scan.audio_dirs.found":
+        "Found {{count}} books (directories); processing them one by one",
+      "scan.item.processing":
+        "\"{{library_name}}\": book {{current}} of {{total}}, {{remaining}} left: {{name}}",
+      "scan.chapter.processing":
+        "\"{{book}}\": chapters {{current}}/{{total}} (book {{item_current}}/{{item_total}} in this library)",
       "scan.auto_merge.processing": "Processing automatic merges...",
       "scan.completed":
         "Scan completed: {{total}} total, {{created}} created, {{updated}} updated, {{deleted}} deleted, {{errors}} errors",
@@ -1497,6 +1506,7 @@ const enUS = {
         "Library watcher failed to start: {{error}}",
       "metadata.chapter.writing":
         "Writing chapter {{current}}/{{total}}: {{chapter_title}}",
+      "metadata.task.running": "Writing metadata into the book's audio files…",
       "metadata.write.completed":
         "Metadata write completed: {{success}} succeeded, {{failed}} failed",
       "metadata.write.completed_for_book":

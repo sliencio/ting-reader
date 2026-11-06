@@ -1382,6 +1382,7 @@ const zhCN = {
       "notification.webhook.deleted": "Webhook 通知配置已删除：{{webhook_name}}",
       "task.execute": "执行任务",
       "task.execute_with_payload": "执行任务：{{payload}}",
+      "task.execute_with_name": "正在执行：{{task_name}}",
       "task.recovery.started": "正在从数据库恢复未完成的任务",
       "task.recovery.completed": "任务恢复完成：{{count}} 个",
       "task.recovery.failed": "任务恢复失败：{{error}}",
@@ -1395,14 +1396,20 @@ const zhCN = {
       "task.max_retries_failed": "任务达到最大重试次数后失败：{{task_id}}",
       "task.timed_out": "任务超时：{{timeout_secs}} 秒",
       "scan.started": "开始扫描存储库：{{path}}",
-      "scan.local.scanning": "正在扫描本地目录...",
-      "scan.webdav.scanning": "正在扫描 WebDAV 目录...",
-      "scan.rss.fetching": "正在获取 RSS：{{url}}",
+      "scan.queued": "等待中：存储库「{{library_name}}」的扫描任务已排队",
+      "scan.running": "正在扫描存储库「{{library_name}}」，正在准备…",
+      "scan.mode.full": "全量同步",
+      "scan.mode.incremental": "增量同步",
+      "scan.local.scanning": "「{{library_name}}」正在扫描本地目录，统计文件中…",
+      "scan.webdav.scanning": "「{{library_name}}」正在读取 WebDAV 目录列表…",
+      "scan.rss.fetching": "「{{library_name}}」正在获取 RSS：{{url}}",
       "scan.rss.fetched": "RSS 获取完成，发现 {{count}} 个音频条目",
       "scan.rss.completed": "RSS 库扫描完成，发现 {{episodes}} 个音频条目",
-      "scan.audio_dirs.found": "找到 {{count}} 个包含音频文件的目录",
-      "scan.item.processing": "处理中 ({{current}}/{{total}}，还剩 {{remaining}} 本)：{{name}}",
-      "scan.chapter.processing": "正在处理「{{book}}」章节 {{current}}/{{total}}",
+      "scan.audio_dirs.found": "已找到 {{count}} 本书（目录），开始逐本处理",
+      "scan.item.processing":
+        "「{{library_name}}」正在处理第 {{current}}/{{total}} 本，还剩 {{remaining}} 本：{{name}}",
+      "scan.chapter.processing":
+        "「{{book}}」正在读取章节 {{current}}/{{total}}（整库第 {{item_current}}/{{item_total}} 本）",
       "scan.auto_merge.processing": "正在处理自动合并...",
       "scan.completed":
         "扫描完成：共 {{total}} 本，新增 {{created}} 本，更新 {{updated}} 本，删除 {{deleted}} 本，错误 {{errors}} 个",
@@ -1411,6 +1418,7 @@ const zhCN = {
       "library.watcher.start_failed": "启动库监听器失败：{{error}}",
       "metadata.chapter.writing":
         "正在写入第 {{current}}/{{total}} 章：{{chapter_title}}",
+      "metadata.task.running": "正在写入书籍音频文件的元数据…",
       "metadata.write.completed":
         "元数据写入完成，成功 {{success}} 章，失败 {{failed}} 章",
       "metadata.write.completed_for_book":

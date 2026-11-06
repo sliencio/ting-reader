@@ -22,6 +22,11 @@ pub(super) struct ChapterProcessingOptions<'a> {
     pub(super) json_chapters: Option<Vec<crate::core::books::metadata::AudiobookshelfChapter>>,
     pub(super) chapter_title_template: Option<&'a str>,
     pub(super) chapter_title_overrides: Option<&'a [String]>,
+    /// 章节进度会覆盖掉「第几本」那条提示，所以把书名和序号一起带上，
+    /// 否则用户在日志里只看到「正在处理某个章节」，不知道整轮还有多少本。
+    pub(super) library_name: &'a str,
+    pub(super) item_current: u32,
+    pub(super) item_total: u32,
 }
 
 impl LibraryScanner {
@@ -39,6 +44,9 @@ impl LibraryScanner {
             json_chapters,
             chapter_title_template,
             chapter_title_overrides,
+            library_name,
+            item_current,
+            item_total,
         } = options;
         let extract_extra_chapters = scraper_config.extract_extra_chapters;
         let cloud_mode = scraper_config.cloud_mode;
@@ -158,6 +166,9 @@ impl LibraryScanner {
                         "current": index + 1,
                         "total": total_files,
                         "book": book.title.clone().unwrap_or_default(),
+                        "library_name": library_name,
+                        "item_current": item_current,
+                        "item_total": item_total,
                     }),
                 )
                 .await;

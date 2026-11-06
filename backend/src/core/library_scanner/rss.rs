@@ -54,7 +54,10 @@ impl LibraryScanner {
         self.update_progress_key(
             task_id,
             "scan.rss.fetching",
-            serde_json::json!({ "url": library.url }),
+            serde_json::json!({
+                "library_name": library.name,
+                "url": library.url,
+            }),
         )
         .await;
 
@@ -242,7 +245,10 @@ impl LibraryScanner {
         self.update_progress_key(
             task_id,
             "scan.rss.fetched",
-            serde_json::json!({ "count": feed.episodes.len() }),
+            serde_json::json!({
+                "library_name": library.name,
+                "count": feed.episodes.len(),
+            }),
         )
         .await;
 

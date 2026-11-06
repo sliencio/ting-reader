@@ -64,6 +64,9 @@ const LEVEL_OPTIONS: Array<{ label?: string; labelKey?: string; value: string }>
 
 const PLUGIN_SOURCE_OPTIONS = ['', 'code', 'lifecycle', 'runtime', 'gateway', 'security'];
 
+// 展开详情里不展示的内部字段：都是排查时才用得到的技术标识，用户看不懂。
+const HIDDEN_FIELD_KEYS = new Set(['task_id', 'task_type', 'task_status', 'error']);
+
 const LogsPage: React.FC = () => {
   const { t } = useTranslation();
   useApplicationTimeZone();
@@ -291,7 +294,15 @@ const LogsPage: React.FC = () => {
       ...(log.message_params || {}),
       defaultValue: '',
     });
-    return translated || log.message || log.raw_message || log.message_key;
+    const text = translated || log.message || log.raw_message || log.message_key;
+    // 扫描类日志补一个「全量/增量」标记：用户点哪个按钮都只看到一个进度条，
+    // 不写清楚就分不出这次是全量重扫还是增量。
+    const mode = log.message_params?.mode;
+    if (typeof mode === 'string' && log.message_key.startsWith('scan.')) {
+      const label = t(`adminLogs.messages.scan.mode.${mode}`, { defaultValue: '' });
+      if (label) return `${text} · ${label}`;
+    }
+    return text;
   };
 
   const getLogKey = (log: LogEntry, index: number) => {
@@ -496,7 +507,11 @@ const LogsPage: React.FC = () => {
             const isTask = !!log.task_id;
             const logKey = getLogKey(log, index);
             const logMessage = getLogMessage(log);
-            const fieldEntries = log.fields ? Object.entries(log.fields) : [];
+            const fieldEntries = log.fields
+              ? Object.entries(log.fields).filter(
+                  ([key, value]) => !HIDDEN_FIELD_KEYS.has(key) && value !== null && value !== undefined && value !== '',
+                )
+              : [];
             const hasDetails = fieldEntries.length > 0;
             const isExpanded = expandedLogKeys.has(logKey);
             const eventId = typeof log.fields?.event_id === 'string' ? log.fields.event_id : undefined;

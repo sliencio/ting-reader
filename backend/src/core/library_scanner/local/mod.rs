@@ -19,6 +19,10 @@ use walkdir::WalkDir;
 
 struct LocalBookProcessingContext<'a> {
     library_id: &'a str,
+    /// 存储库名称与「第几本/共几本」，随进度提示一起展示。
+    library_name: &'a str,
+    item_current: u32,
+    item_total: u32,
     dir: &'a Path,
     files: &'a [PathBuf],
     last_scanned: Option<chrono::DateTime<chrono::Utc>>,
@@ -47,6 +51,7 @@ impl LibraryScanner {
     ) -> Result<ScanResult> {
         let LocalLibraryScanContext {
             library_id,
+            library_name,
             path,
             task_id,
             last_scanned,
@@ -59,8 +64,15 @@ impl LibraryScanner {
             ..Default::default()
         };
 
-        self.update_progress_key(task_id, "scan.local.scanning", serde_json::json!({}))
-            .await;
+        self.update_progress_key(
+            task_id,
+            "scan.local.scanning",
+            serde_json::json!({
+                "library_name": library_name,
+                "mode": mode.as_str(),
+            }),
+        )
+        .await;
 
         // Get all supported extensions dynamically
         let supported_extensions = self.get_supported_extensions().await;
@@ -193,7 +205,11 @@ impl LibraryScanner {
         self.update_progress_key(
             task_id,
             "scan.audio_dirs.found",
-            serde_json::json!({ "count": dir_groups.len() }),
+            serde_json::json!({
+                "library_name": library_name,
+                "mode": mode.as_str(),
+                "count": dir_groups.len(),
+            }),
         )
         .await;
 
@@ -320,6 +336,7 @@ impl LibraryScanner {
                     task_id,
                     "scan.item.processing",
                     serde_json::json!({
+                        "library_name": library_name,
                         "current": processed_count,
                         "total": total_groups,
                         "remaining": total_groups.saturating_sub(processed_count),
@@ -415,6 +432,9 @@ impl LibraryScanner {
             match self
                 .process_book_directory(LocalBookProcessingContext {
                     library_id,
+                    library_name,
+                    item_current: processed_count as u32,
+                    item_total: total_groups as u32,
                     dir: &dir,
                     files: &files,
                     last_scanned,

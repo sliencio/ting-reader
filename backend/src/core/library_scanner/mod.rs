@@ -103,6 +103,8 @@ pub struct ScanResult {
 
 pub(crate) struct LocalLibraryScanContext<'a> {
     library_id: &'a str,
+    /// 存储库名称，用于让进度提示能说清「正在扫哪个库」。
+    library_name: &'a str,
     path: &'a Path,
     task_id: Option<&'a str>,
     last_scanned: Option<chrono::DateTime<chrono::Utc>>,
@@ -448,6 +450,7 @@ impl LibraryScanner {
             } else {
                 self.scan_local_library(LocalLibraryScanContext {
                     library_id,
+                    library_name: &library.name,
                     path,
                     task_id,
                     last_scanned,
