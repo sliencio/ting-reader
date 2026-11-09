@@ -477,6 +477,93 @@ impl SeriesRepository {
             })
             .await
     }
+
+    /// Fold `source_ids` into `target_id` and delete the merged rows.
+    ///
+    /// Series identity is heuristic — directory names, sidecar declarations and
+    /// hand edits all feed it — so two rows for one collection will happen no
+    /// matter how carefully the rules are tuned. Merging is the escape hatch:
+    /// it depends on nothing but the user's own judgment about which rows
+    /// belong together.
+    ///
+    /// A book present in both rows keeps the target's order. Survivors that
+    /// still collide are renumbered by their existing order so the merged
+    /// collection reads in one sequence rather than two interleaved ones.
+    /// Returns the number of books moved.
+    pub async fn merge_into(&self, target_id: &str, source_ids: Vec<String>) -> Result<usize> {
+        let target_id = target_id.to_string();
+        self.db
+            .transaction_immediate(move |tx| {
+                // Members that end up duplicated are dropped before the move so
+                // the unique index never sees a conflict mid-transaction.
+                for source in &source_ids {
+                    tx.execute(
+                        "INSERT INTO series_books (series_id, book_id, book_order, source) \
+                         SELECT ?, book_id, book_order, source FROM series_books \
+                         WHERE series_id = ? \
+                         AND book_id NOT IN (SELECT book_id FROM series_books WHERE series_id = ?)",
+                        rusqlite::params![&target_id, source, &target_id],
+                    )
+                    .map_err(TingError::DatabaseError)?;
+                    tx.execute(
+                        "DELETE FROM series_books WHERE series_id = ?",
+                        rusqlite::params![source],
+                    )
+                    .map_err(TingError::DatabaseError)?;
+                    tx.execute(
+                        "INSERT OR IGNORE INTO playlist_items \
+                         (playlist_id, item_type, item_id, item_order, created_at) \
+                         SELECT playlist_id, item_type, ?, item_order, created_at \
+                         FROM playlist_items WHERE item_type = 'series' AND item_id = ?",
+                        rusqlite::params![&target_id, source],
+                    )
+                    .map_err(TingError::DatabaseError)?;
+                    tx.execute(
+                        "DELETE FROM playlist_items WHERE item_type = 'series' AND item_id = ?",
+                        rusqlite::params![source],
+                    )
+                    .map_err(TingError::DatabaseError)?;
+                    tx.execute("DELETE FROM series WHERE id = ?", rusqlite::params![source])
+                        .map_err(TingError::DatabaseError)?;
+                }
+
+                // Renumber into a single 1..N sequence, keeping the relative
+                // order the rows already had.
+                let moved;
+                {
+                    let mut statement = tx
+                        .prepare(
+                            "SELECT book_id FROM series_books WHERE series_id = ? \
+                             ORDER BY book_order ASC, book_id ASC",
+                        )
+                        .map_err(TingError::DatabaseError)?;
+                    let book_ids = statement
+                        .query_map(rusqlite::params![&target_id], |row| row.get::<_, String>(0))
+                        .map_err(TingError::DatabaseError)?
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .map_err(TingError::DatabaseError)?;
+                    moved = book_ids.len();
+                    for (index, book_id) in book_ids.iter().enumerate() {
+                        tx.execute(
+                            "UPDATE series_books SET book_order = ? \
+                             WHERE series_id = ? AND book_id = ?",
+                            rusqlite::params![(index + 1) as i32, &target_id, book_id],
+                        )
+                        .map_err(TingError::DatabaseError)?;
+                    }
+                }
+
+                let synced_at = chrono::Utc::now().to_rfc3339();
+                tx.execute(
+                    "UPDATE series SET updated_at = ? WHERE id = ?",
+                    rusqlite::params![&synced_at, &target_id],
+                )
+                .map_err(TingError::DatabaseError)?;
+
+                Ok(moved)
+            })
+            .await
+    }
 }
 
 #[async_trait]

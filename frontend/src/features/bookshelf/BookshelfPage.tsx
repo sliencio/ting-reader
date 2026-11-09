@@ -10,7 +10,7 @@ import SeriesCard from '../../shared/cards/SeriesCard';
 import SeriesModal from '../../shared/modals/SeriesModal';
 import DeleteLibraryItemModal from './bookDetail/DeleteLibraryItemModal';
 import DisplaySettingsMenu from '../../shared/widgets/DisplaySettingsMenu';
-import { Search, Database, Plus, Library as LibraryIcon, Layers, Check, X, CheckSquare, ChevronDown, Trash2, BookCheck, BookX, RefreshCw } from 'lucide-react';
+import { Search, Database, Plus, Library as LibraryIcon, Layers, Check, X, CheckSquare, ChevronDown, Trash2, BookCheck, BookX, RefreshCw, Merge } from 'lucide-react';
 import { usePlayerStore } from '../../core/stores/playerStore';
 import { useAuthStore } from '../../core/stores/authStore';
 import { getPinyinInitial } from '../../core/utils/pinyin';
@@ -55,6 +55,8 @@ const BookshelfPage: React.FC = () => {
   const [deleteSourceFiles, setDeleteSourceFiles] = useState(false);
   const [savingReadStatus, setSavingReadStatus] = useState(false);
   const [rescanningBooks, setRescanningBooks] = useState(false);
+  const [mergingSeries, setMergingSeries] = useState(false);
+  const [isMergeSeriesOpen, setIsMergeSeriesOpen] = useState(false);
   const [confirmUnread, setConfirmUnread] = useState(false);
 
   useEffect(() => {
@@ -302,8 +304,17 @@ const BookshelfPage: React.FC = () => {
   };
 
   const handleRescanBooks = async () => {
-    if (selectedBookIds.length === 0 || rescanningBooks) return;
-    const selected = selectedBookIds
+    if ((selectedBookIds.length === 0 && selectedSeriesIds.length === 0) || rescanningBooks) return;
+    // The server rescans by book, so a selected series contributes every
+    // member it currently holds. Series with no books are skipped rather than
+    // failing the whole batch.
+    const bookIds = new Set(selectedBookIds);
+    for (const seriesId of selectedSeriesIds) {
+      for (const book of series.find(s => s.id === seriesId)?.books ?? []) {
+        bookIds.add(book.id);
+      }
+    }
+    const selected = [...bookIds]
       .map(id => books.find(b => b.id === id))
       .filter((book): book is Book => Boolean(book));
     // The server scopes the scan by library, so one request per library.
@@ -326,6 +337,34 @@ const BookshelfPage: React.FC = () => {
       alert(apiErrorMessage(err, t('bookshelf.rescanFailed', '同步失败')));
     } finally {
       setRescanningBooks(false);
+    }
+  };
+
+  const handleMergeSeries = async () => {
+    if (selectedSeriesIds.length < 2 || mergingSeries) return;
+    // Oldest row wins so a merge never silently renames the collection;
+    // the user can rename afterwards.
+    const ordered = selectedSeriesIds
+      .map(id => series.find(s => s.id === id))
+      .filter((entry): entry is Series => Boolean(entry))
+      .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '') || a.id.localeCompare(b.id));
+    if (ordered.length < 2) return;
+    const [target, ...rest] = ordered;
+    setMergingSeries(true);
+    try {
+      await bookOperations.current?.mergeSeries(target.id, rest.map(s => s.id));
+      alert(t('bookshelf.mergeSeriesDone', {
+        title: target.title,
+        count: ordered.length,
+      }));
+      setIsMergeSeriesOpen(false);
+      exitSelectionMode();
+      await fetchData(true);
+    } catch (err) {
+      console.error('Failed to merge series', err);
+      alert(apiErrorMessage(err, t('bookshelf.mergeSeriesFailed', '合并失败')));
+    } finally {
+      setMergingSeries(false);
     }
   };
 
@@ -529,6 +568,21 @@ const BookshelfPage: React.FC = () => {
     } as Series;
   }, [selectedSeriesIds, series]);
 
+  // 合并前先给用户看清会保留哪一行、吞掉哪几行。
+  const mergePreview = React.useMemo(() => {
+    if (selectedSeriesIds.length < 2) return null;
+    const ordered = selectedSeriesIds
+      .map(id => series.find(s => s.id === id))
+      .filter((entry): entry is Series => Boolean(entry))
+      .sort((a, b) => (a.created_at || '').localeCompare(b.created_at || '') || a.id.localeCompare(b.id));
+    if (ordered.length < 2) return null;
+    return {
+      title: ordered[0].title,
+      count: ordered.length,
+      titles: ordered.map(entry => entry.title),
+    };
+  }, [selectedSeriesIds, series]);
+
   const shelfLayoutClass = viewMode === 'list'
     ? 'divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-100 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-900'
     : `grid ${getGridCols()}`;
@@ -650,7 +704,7 @@ const BookshelfPage: React.FC = () => {
                                   setIsOperationsOpen(false);
                                   void handleRescanBooks();
                                 }}
-                                disabled={selectedBookIds.length === 0 || rescanningBooks}
+                                disabled={(selectedBookIds.length === 0 && selectedSeriesIds.length === 0) || rescanningBooks}
                                 className="w-full text-left px-4 py-2.5 text-sm font-semibold rounded-xl transition-colors text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800 flex items-center gap-2 disabled:opacity-50 disabled:hover:bg-transparent"
                               >
                                 <RefreshCw size={16} className={rescanningBooks ? 'animate-spin' : ''} />
@@ -667,6 +721,18 @@ const BookshelfPage: React.FC = () => {
                               >
                                 <Layers size={16} />
                                 <span>{t('bookshelf.createSeries')}</span>
+                              </button>
+                              <button
+                                role="menuitem"
+                                onClick={() => {
+                                  setIsOperationsOpen(false);
+                                  setIsMergeSeriesOpen(true);
+                                }}
+                                disabled={selectedSeriesIds.length < 2 || mergingSeries}
+                                className="w-full text-left px-4 py-2.5 text-sm font-semibold rounded-xl transition-colors text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800 flex items-center gap-2 disabled:opacity-50 disabled:hover:bg-transparent"
+                              >
+                                <Merge size={16} />
+                                <span>{t('bookshelf.mergeSeries', '合并系列')}</span>
                               </button>
                               <button
                                 role="menuitem"
@@ -914,6 +980,28 @@ const BookshelfPage: React.FC = () => {
         selectedBooks={books.filter(b => selectedBookIds.includes(b.id))}
         onSuccess={exitSelectionMode}
       />
+
+      {/* Series merge confirmation */}
+      {isMergeSeriesOpen && mergePreview && (
+        <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget && !mergingSeries) setIsMergeSeriesOpen(false); }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="merge-series-title" aria-describedby="merge-series-description" className="w-full max-w-md rounded-3xl border border-slate-100 bg-white p-6 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-2xl bg-primary-50 text-primary-600 dark:bg-primary-950/50 dark:text-primary-400"><Merge size={22} /></div>
+            <h2 id="merge-series-title" className="text-lg font-bold text-slate-900 dark:text-white">{t('bookshelf.mergeSeriesTitle', '合并系列')}</h2>
+            <p id="merge-series-description" className="mt-2 text-sm leading-relaxed text-slate-500 dark:text-slate-400">
+              {t('bookshelf.mergeSeriesMessage', { count: mergePreview.count, title: mergePreview.title })}
+            </p>
+            <ul className="mt-3 max-h-40 space-y-1 overflow-y-auto rounded-xl bg-slate-50 p-3 text-sm text-slate-600 dark:bg-slate-800/60 dark:text-slate-300">
+              {mergePreview.titles.map(title => (
+                <li key={title} className="truncate">{title}</li>
+              ))}
+            </ul>
+            <div className="mt-6 flex justify-end gap-3">
+              <button autoFocus onClick={() => setIsMergeSeriesOpen(false)} disabled={mergingSeries} className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-medium text-slate-600 disabled:opacity-50 dark:border-slate-700 dark:text-slate-300">{t('common.cancel')}</button>
+              <button onClick={() => void handleMergeSeries()} disabled={mergingSeries} className="rounded-xl bg-primary-600 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-primary-700 disabled:opacity-50">{mergingSeries ? t('common.loading') : t('bookshelf.mergeSeriesConfirm', '合并')}</button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {isDeleteBookOpen && mockBookForDeletion && (
         <DeleteLibraryItemModal

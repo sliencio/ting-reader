@@ -113,6 +113,7 @@ use crate::api::handlers::{
     mark_books,
     mark_chapters,
     merge_books,
+    merge_series,
     move_chapters,
     // Proxy API
     proxy_cover,
@@ -316,6 +317,7 @@ pub fn build_api_routes(state: AppState) -> Router {
         .route("/api/storage/folders", get(get_storage_folders))
         // Series management endpoints
         .route("/api/v1/series", get(list_series).post(create_series))
+        .route("/api/v1/series/merge", post(merge_series))
         .route(
             "/api/v1/series/:id",
             get(get_series).put(update_series).delete(delete_series),

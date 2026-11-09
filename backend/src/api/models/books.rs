@@ -395,6 +395,13 @@ pub struct UpdateSeriesRequest {
     pub book_ids: Option<Vec<String>>,
 }
 
+/// Fold several series into one. `target_id` is the row that survives.
+#[derive(Debug, Deserialize)]
+pub struct MergeSeriesRequest {
+    pub target_id: String,
+    pub source_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SeriesResponse {
     pub id: String,

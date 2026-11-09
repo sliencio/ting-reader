@@ -1,4 +1,6 @@
-use crate::api::models::{BookResponse, CreateSeriesRequest, SeriesResponse, UpdateSeriesRequest};
+use crate::api::models::{
+    BookResponse, CreateSeriesRequest, MergeSeriesRequest, SeriesResponse, UpdateSeriesRequest,
+};
 use crate::api::state::AppState;
 use crate::core::app::error::{AccessErrorKind, InputErrorKind, LookupErrorKind};
 use crate::core::app::error::{Result, TingError};
@@ -460,4 +462,119 @@ async fn update_book_metadata_series(state: &AppState, book_id: &str) -> Result<
             .await?;
     }
     Ok(())
+}
+
+/// Handler for POST /api/v1/series/merge - Fold several series into one
+///
+/// Series identity is inferred, so duplicates appear whenever the naming
+/// rules miss a variant. Merging lets the user resolve that directly instead
+/// of waiting for the heuristic to be taught a new pattern.
+pub async fn merge_series(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<MergeSeriesRequest>,
+) -> Result<impl IntoResponse> {
+    if user.role != "admin" {
+        return Err(TingError::permission(
+            AccessErrorKind::AdministratorRequired,
+            "merge_series::permission",
+            "Only admin can merge series".to_string(),
+        ));
+    }
+
+    let target = state
+        .series_repo
+        .find_by_id(&req.target_id)
+        .await?
+        .ok_or_else(|| {
+            TingError::not_found(
+                LookupErrorKind::Series,
+                "merge_series::target_not_found",
+                format!("Series with id {} not found", req.target_id),
+            )
+        })?;
+
+    let mut source_ids = Vec::new();
+    for id in req.source_ids {
+        if id == target.id || source_ids.contains(&id) {
+            continue;
+        }
+        let source = state.series_repo.find_by_id(&id).await?.ok_or_else(|| {
+            TingError::not_found(
+                LookupErrorKind::Series,
+                "merge_series::source_not_found",
+                format!("Series with id {id} not found"),
+            )
+        })?;
+        // Memberships are library-scoped; crossing libraries would move books
+        // into a collection they no longer belong to.
+        if source.library_id != target.library_id {
+            return Err(TingError::validation(
+                InputErrorKind::InvalidValue,
+                "merge_series::library_mismatch",
+                "Cannot merge series from different libraries".to_string(),
+            ));
+        }
+        source_ids.push(id);
+    }
+
+    if source_ids.is_empty() {
+        return Err(TingError::validation(
+            InputErrorKind::MissingField,
+            "merge_series::no_sources",
+            "At least one other series is required".to_string(),
+        ));
+    }
+
+    let books_before = state.series_repo.find_books_by_series(&target.id).await?;
+    let moved = state.series_repo.merge_into(&target.id, source_ids).await?;
+    let books_after = state.series_repo.find_books_by_series(&target.id).await?;
+
+    // Sidecar files list every series a book belongs to; the absorbed rows are
+    // gone now, so any book whose memberships changed needs a rewrite.
+    let mut affected: Vec<String> = books_before.into_iter().map(|(b, _)| b.id).collect();
+    affected.extend(books_after.iter().map(|(b, _)| b.id.clone()));
+    affected.sort();
+    affected.dedup();
+    for book_id in affected {
+        if let Err(e) = update_book_metadata_series(&state, &book_id).await {
+            tracing::warn!(
+                book_id = %book_id,
+                error = %e,
+                message_key = "metadata.json.update_failed",
+                message_params = %serde_json::json!({
+                    "book_id": book_id,
+                    "error": e.to_string(),
+                }),
+                "Failed to update book metadata.json"
+            );
+        }
+    }
+
+    let percentages =
+        crate::db::repository::reading::ReadingRepository::new(state.book_repo.db().clone())
+            .percentages(&user.id)
+            .await?;
+    let merged = state
+        .series_repo
+        .find_by_id(&target.id)
+        .await?
+        .unwrap_or(target);
+    let mut response = SeriesResponse::from(merged);
+    response.books = books_after
+        .into_iter()
+        .map(|(b, _)| {
+            let mut book = BookResponse::from(b);
+            book.progress_percent = percentages.get(&book.id).copied().unwrap_or(0.0);
+            book
+        })
+        .collect();
+    tracing::info!(
+        series_id = %response.id,
+        members = moved,
+        message_key = "series.merged",
+        message_params = %serde_json::json!({ "title": response.title, "members": moved }),
+        "Series merged"
+    );
+    Ok(Json(response))
 }

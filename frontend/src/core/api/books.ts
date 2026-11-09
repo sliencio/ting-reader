@@ -1,4 +1,4 @@
-import type { Book, Chapter, Progress } from '../types';
+import type { Book, Chapter, Progress, Series } from '../types';
 import type { AxiosInstance } from 'axios';
 
 /** Scraped metadata that the book database can persist and return for review. */
@@ -84,6 +84,14 @@ export class BookOperations {
     return this.run(signal =>
       this.api.post(`/api/libraries/${encodeURIComponent(libraryId)}/scan`,
         { mode: 'incremental', book_ids: bookIds }, { signal }));
+  }
+
+  /** Fold several series into `targetId`; the other rows are removed. */
+  mergeSeries(targetId: string, sourceIds: string[]) {
+    return this.run(async signal => (await this.api.post<Series>(
+      '/api/v1/series/merge',
+      { target_id: targetId, source_ids: sourceIds },
+      { signal })).data);
   }
 
   deleteSeries(ids: string[]) {

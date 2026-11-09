@@ -142,3 +142,57 @@ async fn releasing_inferred_memberships_keeps_explicit_ones() {
     // skipped the explicit book, so the hand-made link survives the release.
     assert_eq!(memberships(&db, "book-1").await, vec![inferred.id.clone()]);
 }
+
+#[tokio::test]
+async fn merging_moves_members_and_drops_duplicates() {
+    let (db, repo) = repository().await;
+    let target = repo
+        .find_or_create_by_title(series("s1", "斗破苍穹"))
+        .await
+        .unwrap();
+    let duplicate = repo
+        .find_or_create_by_title(series("s2", "斗破苍穹 少年篇"))
+        .await
+        .unwrap();
+    // The naming rules miss this variant, so two rows really do exist — which
+    // is the situation the merge exists to resolve.
+    assert_ne!(target.id, duplicate.id);
+
+    repo.add_book(SeriesBook {
+        series_id: target.id.clone(),
+        book_id: "book-1".into(),
+        book_order: 1,
+    })
+    .await
+    .unwrap();
+    // The book also sits in the duplicate, which is exactly the overlap the
+    // merge has to resolve without violating the unique index.
+    repo.add_book(SeriesBook {
+        series_id: duplicate.id.clone(),
+        book_id: "book-1".into(),
+        book_order: 1,
+    })
+    .await
+    .unwrap();
+    repo.add_book(SeriesBook {
+        series_id: duplicate.id.clone(),
+        book_id: "book-2".into(),
+        book_order: 2,
+    })
+    .await
+    .unwrap();
+
+    let moved = repo
+        .merge_into(&target.id, vec![duplicate.id.clone()])
+        .await
+        .unwrap();
+
+    assert_eq!(moved, 2);
+    assert!(repo.find_by_id(&duplicate.id).await.unwrap().is_none());
+    assert_eq!(memberships(&db, "book-1").await, vec![target.id.clone()]);
+    assert_eq!(memberships(&db, "book-2").await, vec![target.id.clone()]);
+    // Renumbered into one sequence rather than keeping two `1`s.
+    let books = repo.find_books_by_series(&target.id).await.unwrap();
+    let orders: Vec<i32> = books.iter().map(|(_, order)| *order).collect();
+    assert_eq!(orders, vec![1, 2]);
+}
