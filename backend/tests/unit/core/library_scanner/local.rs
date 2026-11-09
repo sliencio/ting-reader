@@ -57,6 +57,7 @@ async fn parent_series_people_reach_saved_volumes_and_numeric_chapter_indexes() 
                 scraper_config: &config,
                 mode,
                 scan_paths: None,
+                force_reprocess: false,
             })
             .await
             .unwrap();
@@ -174,6 +175,7 @@ async fn local_metadata_json_series_import_ignores_directory_series_setting() {
                 scraper_config: &config,
                 mode: ScanMode::Incremental,
                 scan_paths: None,
+                force_reprocess: false,
             })
             .await
             .unwrap();
@@ -250,6 +252,7 @@ async fn full_scan_saves_clean_directory_titles_and_all_completed_range_chapters
                 scraper_config: &config,
                 mode,
                 scan_paths: None,
+                force_reprocess: false,
             })
             .await
             .unwrap();

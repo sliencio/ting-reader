@@ -79,6 +79,13 @@ export class BookOperations {
       this.api.post(`/api/libraries/${encodeURIComponent(libraryId)}/scan`, null, { signal }));
   }
 
+  /** Rescan only these books; the rest of the library keeps its state. */
+  rescanBooks(libraryId: string, bookIds: string[]) {
+    return this.run(signal =>
+      this.api.post(`/api/libraries/${encodeURIComponent(libraryId)}/scan`,
+        { mode: 'incremental', book_ids: bookIds }, { signal }));
+  }
+
   deleteSeries(ids: string[]) {
     return this.run(async signal => {
       for (const id of new Set(ids)) {

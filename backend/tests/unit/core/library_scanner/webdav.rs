@@ -97,7 +97,7 @@ async fn webdav_series_inherit_parent_people_and_sort_decoded_chinese_chapters()
     ] {
         config.auto_generate_series = enabled;
         let result = scanner
-            .scan_webdav_library(&library, None, &config, mode)
+            .scan_webdav_library(&library, None, &config, mode, None, false)
             .await
             .unwrap();
         assert_eq!(result.failed_count, 0, "{:?}", result.errors);

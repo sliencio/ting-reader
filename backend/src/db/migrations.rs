@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
-pub const LATEST_SCHEMA_VERSION: i64 = 32;
+pub const LATEST_SCHEMA_VERSION: i64 = 33;
 
 /// Migration version tracking table
 const MIGRATION_TABLE: &str = r#"
@@ -966,6 +966,9 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     if current_version < 32 {
         apply_migration(conn, 32, MIGRATION_V32)?;
     }
+    if current_version < 33 {
+        migrate_series_identity(conn)?;
+    }
 
     info!("Database migrations completed successfully");
     Ok(())
@@ -1080,6 +1083,124 @@ fn apply_migration(conn: &mut Connection, version: i64, sql: &str) -> Result<()>
     tx.commit().map_err(TingError::DatabaseError)?;
 
     info!("Migration v{} applied successfully", version);
+    Ok(())
+}
+
+fn migrate_series_identity(conn: &mut Connection) -> Result<()> {
+    let tx = conn.transaction()?;
+
+    let has_column = |tx: &rusqlite::Transaction<'_>, table: &str, column: &str| -> Result<bool> {
+        let count: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    };
+
+    // `title_key` is the comparison identity; `title` stays the display form.
+    if !has_column(&tx, "series", "title_key")? {
+        tx.execute_batch("ALTER TABLE series ADD COLUMN title_key TEXT NOT NULL DEFAULT '';")?;
+    }
+    // Which writer owns a membership: '' (legacy / manual) or 'inferred'.
+    // Legacy rows keep '' on purpose — we cannot tell here whether a link came
+    // from a directory guess or from hand curation, and deleting a curated
+    // link during an upgrade would be worse than keeping a stale one.
+    if !has_column(&tx, "series_books", "source")? {
+        tx.execute_batch("ALTER TABLE series_books ADD COLUMN source TEXT NOT NULL DEFAULT '';")?;
+    }
+
+    let rows = {
+        let mut statement = tx.prepare("SELECT id, title FROM series")?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    for (id, title) in rows {
+        let identity = crate::core::books::series_title::series_identity(&title);
+        // Rows without a usable name keep their own identity so the unique
+        // index can still be created.
+        let key = if identity.key.is_empty() {
+            format!("__row:{id}")
+        } else {
+            identity.key
+        };
+        tx.execute(
+            "UPDATE series SET title = ?, title_key = ? WHERE id = ?",
+            rusqlite::params![identity.title, key, id],
+        )?;
+    }
+
+    // Titles that differed only in normalization are one collection. Fold the
+    // duplicates into a single survivor, moving members and playlist entries.
+    let duplicate_groups = {
+        let mut statement = tx.prepare(
+            "SELECT library_id, title_key FROM series \
+             GROUP BY library_id, title_key HAVING COUNT(*) > 1",
+        )?;
+        statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+    };
+    let mut merged = 0usize;
+    for (library_id, title_key) in duplicate_groups {
+        let ids = {
+            let mut statement = tx.prepare(
+                "SELECT id FROM series WHERE library_id = ? AND title_key = ? \
+                 ORDER BY created_at ASC, id ASC",
+            )?;
+            statement
+                .query_map(rusqlite::params![&library_id, &title_key], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let Some((survivor, duplicates)) = ids.split_first() else {
+            continue;
+        };
+        for duplicate in duplicates {
+            tx.execute(
+                "INSERT OR IGNORE INTO series_books (series_id, book_id, book_order, source) \
+                 SELECT ?, book_id, book_order, source FROM series_books WHERE series_id = ?",
+                rusqlite::params![survivor, duplicate],
+            )?;
+            tx.execute(
+                "DELETE FROM series_books WHERE series_id = ?",
+                rusqlite::params![duplicate],
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO playlist_items \
+                 (playlist_id, item_type, item_id, item_order, created_at) \
+                 SELECT playlist_id, item_type, ?, item_order, created_at \
+                 FROM playlist_items WHERE item_type = 'series' AND item_id = ?",
+                rusqlite::params![survivor, duplicate],
+            )?;
+            tx.execute(
+                "DELETE FROM playlist_items WHERE item_type = 'series' AND item_id = ?",
+                rusqlite::params![duplicate],
+            )?;
+            tx.execute(
+                "DELETE FROM series WHERE id = ?",
+                rusqlite::params![duplicate],
+            )?;
+            merged += 1;
+        }
+    }
+
+    tx.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_series_library_title_key \
+         ON series(library_id, title_key);",
+    )?;
+    tx.execute("INSERT INTO schema_migrations (version) VALUES (33)", [])?;
+    tx.commit()?;
+    info!(
+        "Migration v33 applied: series identity ({} duplicate rows merged)",
+        merged
+    );
     Ok(())
 }
 

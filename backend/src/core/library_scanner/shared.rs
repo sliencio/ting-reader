@@ -6,7 +6,11 @@ use std::sync::OnceLock;
 use tracing::{info, warn};
 
 use super::{LibraryScanner, ScanResult};
-use crate::core::books::text_cleaner::{BookName, parse_ordinal};
+use crate::core::books::series_title::{
+    ParsedSeriesTitle, canonicalize_series_title_key, clean_series_base_title, parse_series_title,
+    series_identity,
+};
+use crate::core::books::text_cleaner::BookName;
 use crate::db::repository::Repository;
 use regex::Regex;
 
@@ -43,12 +47,6 @@ pub(crate) struct SeriesDirectoryCandidate<K> {
     pub parent_key: String,
     pub parent_name: String,
     pub name: String,
-}
-
-#[derive(Debug, Clone)]
-struct ParsedSeriesDirectory {
-    base_title: Option<String>,
-    order: Option<i32>,
 }
 
 /// Pre-fetched book lookup data
@@ -153,23 +151,19 @@ impl LibraryScanner {
         // titles in separate libraries remain independent collections.
         let series = self.series_repo.find_or_create_by_title(new_series).await?;
         let target_order = series_info.order.max(1);
+        // Inference owns at most one series per book. Re-linking replaces the
+        // previous inferred membership so a renamed or restructured directory
+        // cannot leave the book in two series at once.
         self.series_repo
-            .add_book(crate::db::models::SeriesBook {
-                series_id: series.id,
-                book_id: book_id.to_string(),
-                book_order: target_order,
-            })
+            .link_inferred_book(library_id, &series.id, book_id, target_order)
             .await?;
 
         Ok(())
     }
 }
 
-type SeriesDirectoryGroup<'a, K> = Vec<(
-    &'a SeriesDirectoryCandidate<K>,
-    ParsedSeriesDirectory,
-    String,
-)>;
+type SeriesDirectoryGroup<'a, K> =
+    Vec<(&'a SeriesDirectoryCandidate<K>, ParsedSeriesTitle, String)>;
 
 pub(crate) fn infer_series_directories<K>(
     candidates: &[SeriesDirectoryCandidate<K>],
@@ -180,7 +174,10 @@ where
     let mut grouped: HashMap<(String, String), SeriesDirectoryGroup<'_, K>> = HashMap::new();
 
     for candidate in candidates {
-        let Some(parsed) = parse_series_directory_name(&candidate.name) else {
+        // Directory names carry `-作者／演播` suffixes; read the book name first
+        // so the volume marker is matched against the title alone.
+        let book_title = BookName::parse(&candidate.name).title;
+        let Some(parsed) = parse_series_title(book_title) else {
             continue;
         };
 
@@ -190,7 +187,7 @@ where
             .map(clean_series_base_title)
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| {
-                clean_series_base_title(BookName::parse(&candidate.parent_name).title)
+                series_identity(BookName::parse(&candidate.parent_name).title).title
             });
 
         if title.is_empty() {
@@ -249,65 +246,6 @@ where
     inferred
 }
 
-fn parse_series_directory_name(name: &str) -> Option<ParsedSeriesDirectory> {
-    let normalized = normalize_series_dir_name(BookName::parse(name).title);
-
-    if let Some(caps) = series_volume_regex().captures(&normalized) {
-        let base = caps
-            .name("base")
-            .map(|m| clean_series_base_title(m.as_str()))
-            .filter(|value| !value.is_empty());
-        let num = caps
-            .name("num2")
-            .or_else(|| caps.name("num"))
-            .and_then(|m| parse_series_number(m.as_str()));
-        return Some(ParsedSeriesDirectory {
-            base_title: base,
-            order: num,
-        });
-    }
-
-    if let Some(caps) = series_s_regex().captures(&normalized) {
-        let base = caps
-            .name("base")
-            .map(|m| clean_series_base_title(m.as_str()))
-            .filter(|value| !value.is_empty());
-        let num = caps
-            .name("num")
-            .and_then(|m| parse_series_number(m.as_str()));
-        return Some(ParsedSeriesDirectory {
-            base_title: base,
-            order: num,
-        });
-    }
-
-    if let Some(caps) = series_word_regex().captures(&normalized) {
-        let base = caps
-            .name("base")
-            .map(|m| clean_series_base_title(m.as_str()))
-            .filter(|value| !value.is_empty());
-        let num = caps
-            .name("num")
-            .and_then(|m| parse_series_number(m.as_str()));
-        return Some(ParsedSeriesDirectory {
-            base_title: base,
-            order: num,
-        });
-    }
-
-    if let Some((base, suffix)) = normalized.split_once('之') {
-        let base = clean_series_base_title(base);
-        if !base.is_empty() && !suffix.trim().is_empty() {
-            return Some(ParsedSeriesDirectory {
-                base_title: Some(base),
-                order: parse_leading_series_number(suffix),
-            });
-        }
-    }
-
-    None
-}
-
 /// Inherit only from the immediate parent of the same book/series. A library
 /// or unrelated collection directory must not supply another book's people.
 pub(crate) fn directory_book_name<'a>(
@@ -321,7 +259,7 @@ pub(crate) fn directory_book_name<'a>(
     let parent = BookName::parse_with_layout(parent, layout, &config.book_name_regex);
     let same_title =
         canonicalize_series_title_key(book.title) == canonicalize_series_title_key(parent.title);
-    let same_series = parse_series_directory_name(book.title).is_some_and(|series| {
+    let same_series = parse_series_title(book.title).is_some_and(|series| {
         series.base_title.is_none_or(|title| {
             canonicalize_series_title_key(&title) == canonicalize_series_title_key(parent.title)
         })
@@ -331,94 +269,6 @@ pub(crate) fn directory_book_name<'a>(
         book.narrator = book.narrator.or(parent.narrator);
     }
     book
-}
-
-fn series_volume_regex() -> &'static Regex {
-    static VOLUME_RE: OnceLock<Regex> = OnceLock::new();
-    VOLUME_RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)^\s*(?P<base>.*?)\s*(?:第\s*)?(?P<num>[0-9]+|[零〇一二两三四五六七八九十百千万]+)(?:\s*[\(（]\s*(?P<num2>[0-9]+|[零〇一二两三四五六七八九十百千万]+)\s*[\)）])?\s*(?:卷|季|部|册|輯|辑)\s*$",
-        )
-        .unwrap()
-    })
-}
-
-fn series_s_regex() -> &'static Regex {
-    static S_RE: OnceLock<Regex> = OnceLock::new();
-    S_RE.get_or_init(|| {
-        Regex::new(r"(?i)^\s*(?P<base>.*?)\s*[-_. ]*s(?P<num>[0-9]{1,3})\s*$").unwrap()
-    })
-}
-
-fn series_word_regex() -> &'static Regex {
-    static WORD_RE: OnceLock<Regex> = OnceLock::new();
-    WORD_RE.get_or_init(|| {
-        Regex::new(r"(?i)^\s*(?P<base>.+?)\s*[-_. ]*(?:vol(?:ume)?|season|book)\s*\.?\s*(?P<num>[0-9]{1,3})\s*$")
-            .unwrap()
-    })
-}
-
-fn normalize_series_dir_name(name: &str) -> String {
-    let mut normalized = String::with_capacity(name.len());
-    for ch in name.chars() {
-        match ch {
-            '０'..='９' => {
-                let digit = (ch as u32 - '０' as u32) as u8 + b'0';
-                normalized.push(digit as char);
-            }
-            '（' => normalized.push('('),
-            '）' => normalized.push(')'),
-            '　' => normalized.push(' '),
-            _ => normalized.push(ch),
-        }
-    }
-    normalized.trim().to_string()
-}
-
-fn clean_series_base_title(value: &str) -> String {
-    value
-        .trim()
-        .trim_matches(|ch: char| {
-            ch.is_whitespace()
-                || matches!(
-                    ch,
-                    '-' | '_' | '.' | '·' | ':' | '：' | '|' | '/' | '\\' | '(' | ')' | '（' | '）'
-                )
-        })
-        .trim()
-        .to_string()
-}
-
-fn canonicalize_series_title_key(value: &str) -> String {
-    normalize_series_dir_name(value)
-        .chars()
-        .filter(|ch| !ch.is_whitespace() && !matches!(ch, '-' | '_' | '.' | '·' | ':' | '：'))
-        .flat_map(|ch| ch.to_lowercase())
-        .collect()
-}
-
-fn parse_leading_series_number(value: &str) -> Option<i32> {
-    let trimmed = value.trim_start();
-    let mut token = String::new();
-    for ch in trimmed.chars() {
-        if ch.is_ascii_digit() || "零〇一二两三四五六七八九十百千万".contains(ch) {
-            token.push(ch);
-        } else if token.is_empty() && ch == '第' {
-            continue;
-        } else {
-            break;
-        }
-    }
-
-    if token.is_empty() {
-        None
-    } else {
-        parse_series_number(&token)
-    }
-}
-
-fn parse_series_number(value: &str) -> Option<i32> {
-    parse_ordinal(value).filter(|number| *number > 0)
 }
 
 pub(crate) fn parse_chapter_range_dir_name(name: &str) -> Option<ChapterRangeDir> {

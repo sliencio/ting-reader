@@ -6,6 +6,7 @@ pub mod merge_service;
 pub mod metadata;
 pub mod nfo_manager;
 pub mod scraper;
+pub mod series_title;
 pub mod service;
 pub mod text_cleaner;
 

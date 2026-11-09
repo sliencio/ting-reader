@@ -105,6 +105,13 @@ pub struct LibraryScanResponse {
 pub struct LibraryScanRequest {
     /// "incremental" or "full". Defaults to incremental.
     pub mode: Option<String>,
+    /// Only rescan these books. Empty means the whole library.
+    ///
+    /// The server resolves each id to its directory and scans just those
+    /// subtrees, so unrelated books keep their current state and are never
+    /// considered for deletion.
+    #[serde(default)]
+    pub book_ids: Vec<String>,
 }
 
 /// Folder information

@@ -58,6 +58,7 @@ impl LibraryScanner {
             scraper_config,
             mode,
             scan_paths,
+            force_reprocess,
         } = context;
         let mut scan_result = ScanResult {
             start_time: Some(std::time::Instant::now()),
@@ -383,6 +384,7 @@ impl LibraryScanner {
                 state.config_fingerprint.as_deref() != Some(state_config_fingerprint.as_str())
             });
             if let Some((book_id, _, _)) = existing_info.as_ref()
+                && !force_reprocess
                 && chapter_counts
                     .get(book_id)
                     .is_some_and(|counts| counts.missing_duration == 0)

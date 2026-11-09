@@ -1,6 +1,89 @@
 use super::*;
 
 #[test]
+fn migration_v33_merges_duplicate_series_and_preserves_members() {
+    let mut conn = Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+    // Rebuild the pre-v33 shape and plant the duplicates the old writers
+    // produced: one series per title normalization, with an overlapping book.
+    conn.execute_batch(
+        "DROP INDEX idx_series_library_title_key;
+         DELETE FROM schema_migrations WHERE version=33;
+         DROP TABLE series_books;
+         DROP TABLE series;
+         CREATE TABLE series (
+             id TEXT PRIMARY KEY,
+             library_id TEXT NOT NULL,
+             title TEXT NOT NULL,
+             author TEXT,
+             narrator TEXT,
+             cover_url TEXT,
+             description TEXT,
+             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+         );
+         CREATE TABLE series_books (
+             series_id TEXT NOT NULL,
+             book_id TEXT NOT NULL,
+             book_order INTEGER NOT NULL,
+             PRIMARY KEY (series_id, book_id)
+         );
+         PRAGMA foreign_keys=ON;
+         INSERT INTO libraries(id,name,type,url) VALUES('library','Test','local','');
+         INSERT INTO books(id,library_id,path,hash) VALUES('b1','library','/b1','h1');
+         INSERT INTO books(id,library_id,path,hash) VALUES('b2','library','/b2','h2');
+         INSERT INTO series(id,library_id,title,created_at) VALUES
+             ('s1','library','斗破苍穹','2026-01-01T00:00:00Z'),
+             ('s2','library','斗破苍穹 第2卷','2026-01-02T00:00:00Z'),
+             ('s3','library','三体','2026-01-03T00:00:00Z');
+         INSERT INTO series_books(series_id,book_id,book_order) VALUES
+             ('s1','b1',1),('s1','b2',2),('s2','b2',1);",
+    )
+    .unwrap();
+
+    run_migrations(&mut conn).unwrap();
+
+    let titles: Vec<(String, String)> = conn
+        .prepare("SELECT title, title_key FROM series ORDER BY title")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        titles,
+        vec![
+            ("三体".to_string(), "三体".to_string()),
+            ("斗破苍穹".to_string(), "斗破苍穹".to_string()),
+        ]
+    );
+    // The overlapping book is kept once, attached to the surviving series.
+    let members: Vec<(String, String)> = conn
+        .prepare("SELECT series_id, book_id FROM series_books ORDER BY book_id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        members,
+        vec![
+            ("s1".to_string(), "b1".to_string()),
+            ("s1".to_string(), "b2".to_string()),
+        ]
+    );
+    // The unique index now prevents the split from recurring.
+    assert!(
+        conn.execute(
+            "INSERT INTO series(id,library_id,title,title_key) \
+             VALUES('s9','library','斗破苍穹','斗破苍穹')",
+            [],
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn migration_v32_preserves_progress_and_is_repeatable() {
     let mut conn = Connection::open_in_memory().unwrap();
     run_migrations(&mut conn).unwrap();

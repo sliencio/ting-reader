@@ -22,13 +22,19 @@ type WebDavFileEntry = (
 );
 
 impl LibraryScanner {
-    /// Scan a WebDAV library
+    /// Scan a WebDAV library.
+    ///
+    /// `scan_urls` narrows the listing to the given book directories (a
+    /// per-book rescan). It is only honoured for incremental runs, and a
+    /// narrowed listing never drives deletion detection.
     pub(crate) async fn scan_webdav_library(
         &self,
         library: &crate::db::models::Library,
         task_id: Option<&str>,
         scraper_config: &crate::db::models::ScraperConfig,
         mode: ScanMode,
+        scan_urls: Option<Vec<String>>,
+        force_reprocess: bool,
     ) -> Result<ScanResult> {
         if self.storage_service.is_none() {
             return Err(TingError::configuration(
@@ -52,8 +58,14 @@ impl LibraryScanner {
         )
         .await;
 
-        // 1. List files recursively
-        let files = self.list_webdav_files(library, task_id, mode).await?;
+        // 1. List files recursively. A per-book rescan only walks the given
+        //    directories, so everything else keeps its previous state.
+        let scoped_urls = scan_urls
+            .filter(|urls| !urls.is_empty())
+            .filter(|_| !mode.is_full());
+        let files = self
+            .list_webdav_files(library, task_id, mode, scoped_urls.as_deref())
+            .await?;
 
         let supported_extensions = self.get_supported_extensions().await;
 
@@ -304,7 +316,8 @@ impl LibraryScanner {
                 // Skip only if:
                 // 1. File count hasn't changed AND
                 // 2. No files have been modified since last scan
-                if current_file_count == existing_chapter_count {
+                // A per-book rescan skips the check entirely.
+                if !force_reprocess && current_file_count == existing_chapter_count {
                     if let Some(latest) = max_mtime {
                         if latest <= last_scan_time {
                             // Only load chapter rows when the cheap timestamp/count
@@ -500,17 +513,20 @@ impl LibraryScanner {
 
         // The listing helper returns only after it has reconstructed an
         // authoritative complete view (from sync deltas, cached ETag subtrees,
-        // or a full traversal). Deletions are therefore safe in either mode.
-        self.handle_book_deletions(&mut scan_result, &prefetched, &found_book_ids, false)
-            .await;
-        let deleted_book_states = cached_book_states
-            .keys()
-            .filter(|path| !live_book_state_paths.contains(*path))
-            .cloned()
-            .collect();
-        self.scan_state_repo
-            .delete_many(&library.id, "webdav_book", deleted_book_states)
-            .await?;
+        // or a full traversal). Deletions are therefore safe in either mode —
+        // except for a scoped rescan, which only saw the requested subtrees.
+        if scoped_urls.is_none() {
+            self.handle_book_deletions(&mut scan_result, &prefetched, &found_book_ids, false)
+                .await;
+            let deleted_book_states = cached_book_states
+                .keys()
+                .filter(|path| !live_book_state_paths.contains(*path))
+                .cloned()
+                .collect();
+            self.scan_state_repo
+                .delete_many(&library.id, "webdav_book", deleted_book_states)
+                .await?;
+        }
         self.scan_state_repo
             .upsert_many(pending_book_states)
             .await?;

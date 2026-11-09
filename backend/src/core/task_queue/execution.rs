@@ -170,6 +170,9 @@ impl TaskQueue {
                 .filter_map(|path| path.as_str().map(std::path::PathBuf::from))
                 .collect::<Vec<_>>()
         });
+        // Only an explicit per-book request sets this; a watcher-driven scoped
+        // scan keeps the ordinary "unchanged means skip" behaviour.
+        let force_reprocess = data["force_reprocess"].as_bool().unwrap_or(false);
 
         info!(
             library_id = %library_id,
@@ -274,12 +277,13 @@ impl TaskQueue {
 
         // Scan the library
         let result = scanner
-            .scan_library_scoped(
+            .scan_library_selection(
                 library_id,
                 library_path,
                 scan_mode,
                 Some(task_id),
                 scan_paths,
+                force_reprocess,
             )
             .await?;
 

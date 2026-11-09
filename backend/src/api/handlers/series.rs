@@ -1,6 +1,6 @@
 use crate::api::models::{BookResponse, CreateSeriesRequest, SeriesResponse, UpdateSeriesRequest};
 use crate::api::state::AppState;
-use crate::core::app::error::{AccessErrorKind, LookupErrorKind};
+use crate::core::app::error::{AccessErrorKind, InputErrorKind, LookupErrorKind};
 use crate::core::app::error::{Result, TingError};
 use crate::db::models::{Series, SeriesBook};
 use crate::db::repository::Repository;
@@ -129,6 +129,24 @@ pub async fn create_series(
     let series_id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
 
+    // The DB enforces one series per identity per library. Report the clash
+    // instead of surfacing a raw constraint failure.
+    if state
+        .series_repo
+        .find_by_title_and_library(&req.title, &req.library_id)
+        .await?
+        .is_some()
+    {
+        return Err(TingError::validation(
+            InputErrorKind::Conflict,
+            "create_series::duplicate",
+            format!(
+                "Series '{}' already exists in this library",
+                req.title.trim()
+            ),
+        ));
+    }
+
     // Default metadata from first book if not provided
     let mut author = req.author;
     let mut narrator = req.narrator;
@@ -247,6 +265,22 @@ pub async fn update_series(
             format!("Series with id {} not found", id),
         )
     })?;
+
+    // Renaming onto another existing series would merge two collections by
+    // accident; the user has to do that deliberately in the UI.
+    if let Some(title) = req.title.as_deref()
+        && let Some(other) = state
+            .series_repo
+            .find_by_title_and_library(title, &existing_series.library_id)
+            .await?
+        && other.id != id
+    {
+        return Err(TingError::validation(
+            InputErrorKind::Conflict,
+            "update_series::duplicate",
+            format!("Series '{title}' already exists in this library"),
+        ));
+    }
 
     let updated_series = Series {
         id: existing_series.id,

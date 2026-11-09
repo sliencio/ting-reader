@@ -111,6 +111,12 @@ pub(crate) struct LocalLibraryScanContext<'a> {
     scraper_config: &'a crate::db::models::ScraperConfig,
     mode: ScanMode,
     scan_paths: Option<&'a [PathBuf]>,
+    /// Re-process matched books even when their files look unchanged.
+    ///
+    /// Set for a user-requested per-book rescan: the point of selecting books
+    /// is to force them through the pipeline, not to re-run the unchanged
+    /// check that already said "nothing to do".
+    force_reprocess: bool,
 }
 
 impl ScanResult {
@@ -305,6 +311,21 @@ impl LibraryScanner {
         task_id: Option<&str>,
         scan_paths: Option<Vec<std::path::PathBuf>>,
     ) -> Result<ScanResult> {
+        self.scan_library_selection(library_id, library_path, mode, task_id, scan_paths, false)
+            .await
+    }
+
+    /// Same as [`Self::scan_library_scoped`], with control over whether an
+    /// explicit selection forces re-processing of unchanged books.
+    pub async fn scan_library_selection(
+        &self,
+        library_id: &str,
+        library_path: &str,
+        mode: ScanMode,
+        task_id: Option<&str>,
+        scan_paths: Option<Vec<std::path::PathBuf>>,
+        force_reprocess: bool,
+    ) -> Result<ScanResult> {
         info!(
             target: "audit::scan",
             message_key = "scan.started",
@@ -408,8 +429,27 @@ impl LibraryScanner {
 
         // Dispatch based on library type
         let scan_result = if library.library_type == "webdav" {
-            self.scan_webdav_library(&library, task_id, &scraper_config, mode)
-                .await?
+            // A book-scoped rescan lists only the requested subtrees and never
+            // treats the rest of the library as deleted.
+            let webdav_scope = effective_scan_paths
+                .as_deref()
+                .filter(|paths| !paths.is_empty())
+                .map(|paths| {
+                    paths
+                        .iter()
+                        .filter_map(|path| path.to_str())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>()
+                });
+            self.scan_webdav_library(
+                &library,
+                task_id,
+                &scraper_config,
+                mode,
+                webdav_scope,
+                force_reprocess,
+            )
+            .await?
         } else if library.library_type == "rss" {
             self.scan_rss_library(&library, task_id, mode).await?
         } else {
@@ -457,6 +497,7 @@ impl LibraryScanner {
                     scraper_config: &scraper_config,
                     mode,
                     scan_paths: effective_scan_paths.as_deref(),
+                    force_reprocess,
                 })
                 .await?
             }

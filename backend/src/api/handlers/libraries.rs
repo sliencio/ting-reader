@@ -10,6 +10,7 @@ use crate::core::storage::local_paths::{
     discover_authorized_roots, ensure_path_inside_root, path_to_display_string,
     resolve_existing_local_library_root, resolve_local_library_path, resolve_storage_folder_target,
 };
+use crate::db::repository::Repository;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -664,18 +665,70 @@ pub async fn scan_library(
         library.url.clone()
     };
 
-    let scan_mode = req
-        .and_then(|Json(body)| body.mode)
+    let (requested_mode, book_ids) = req
+        .map(|Json(body)| (body.mode, body.book_ids))
+        .unwrap_or_default();
+
+    let scan_mode = requested_mode
         .map(|mode| crate::core::library_scanner::ScanMode::from(mode.as_str()))
         .unwrap_or(crate::core::library_scanner::ScanMode::Incremental);
 
+    // A per-book rescan is a scoped incremental pass over the directories those
+    // books live in. Full scans always walk the whole library, so asking for
+    // both is contradictory rather than something to silently reinterpret.
+    let scan_paths = if book_ids.is_empty() {
+        None
+    } else {
+        if scan_mode.is_full() {
+            return Err(TingError::validation(
+                InputErrorKind::UnsupportedValue,
+                "scan_library::validation",
+                "Selecting books is only supported for incremental scans".to_string(),
+            ));
+        }
+        if library.library_type == "rss" {
+            return Err(TingError::validation(
+                InputErrorKind::UnsupportedValue,
+                "scan_library::validation",
+                "RSS libraries cannot be rescanned per book".to_string(),
+            ));
+        }
+        let mut paths = Vec::new();
+        for book_id in &book_ids {
+            let book = state.book_repo.find_by_id(book_id).await?.ok_or_else(|| {
+                TingError::not_found(
+                    LookupErrorKind::Book,
+                    "scan_library::not_found",
+                    format!("Book {book_id} not found"),
+                )
+            })?;
+            if book.library_id != library.id {
+                return Err(TingError::validation(
+                    InputErrorKind::InvalidValue,
+                    "scan_library::validation",
+                    format!("Book {book_id} does not belong to this library"),
+                ));
+            }
+            paths.push(book.path);
+        }
+        Some(paths)
+    };
+
+    let mut data = serde_json::json!({
+        "library_id": library.id,
+        "library_path": library_path,
+        "mode": scan_mode.as_str(),
+    });
+    if let Some(paths) = scan_paths.filter(|paths| !paths.is_empty()) {
+        data["scan_paths"] = serde_json::json!(paths);
+        // Selecting books is an explicit "refresh these" request; a book whose
+        // files look unchanged must not short-circuit it.
+        data["force_reprocess"] = serde_json::json!(true);
+    }
+
     let task_payload = crate::core::task_queue::TaskPayload::Custom {
         task_type: "library_scan".to_string(),
-        data: serde_json::json!({
-            "library_id": library.id,
-            "library_path": library_path,
-            "mode": scan_mode.as_str(),
-        }),
+        data,
     };
 
     let task = crate::core::task_queue::Task::new(

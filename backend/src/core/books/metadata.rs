@@ -268,36 +268,53 @@ pub struct BookMetadataService<'a> {
 }
 
 impl BookMetadataService<'_> {
+    /// Sidecar declarations win over directory inference.
+    ///
+    /// Once `metadata.json` states the series, a guess derived from folder
+    /// names must not keep the same book in a second collection.
+    async fn release_inferred_series(&self, book: &Book, declarations: &[String]) -> Result<()> {
+        if declarations.iter().all(|value| value.trim().is_empty()) {
+            return Ok(());
+        }
+        let mut keep = Vec::new();
+        for declaration in declarations {
+            let Some((title, _)) =
+                crate::core::books::series_title::parse_series_declaration(declaration)
+            else {
+                continue;
+            };
+            if let Some(series) = self
+                .series
+                .find_by_title_and_library(&title, &book.library_id)
+                .await?
+            {
+                keep.push(series.id);
+            }
+        }
+        self.series
+            .release_inferred_memberships(&book.library_id, &book.id, keep)
+            .await
+    }
+
     /// Import sidecar series declarations with identical behavior for local and
     /// remote scans. A manually owned book keeps its existing relationships.
     pub async fn import_series(&self, book: &Book, declarations: &[String]) -> Result<()> {
         if book.manual_corrected != 0 {
             return Ok(());
         }
+        self.release_inferred_series(book, declarations).await?;
         for declaration in declarations {
-            let declaration = declaration.trim();
-            if declaration.is_empty() {
+            let Some((title, explicit_order)) =
+                crate::core::books::series_title::parse_series_declaration(declaration)
+            else {
                 continue;
-            }
-            let (title, explicit_order) = declaration
-                .rsplit_once(" #")
-                .and_then(|(title, order)| {
-                    order
-                        .trim()
-                        .parse::<i32>()
-                        .ok()
-                        .map(|order| (title.trim(), Some(order)))
-                })
-                .unwrap_or((declaration, None));
-            if title.is_empty() {
-                continue;
-            }
+            };
             let series = self
                 .series
                 .find_or_create_by_title(crate::db::models::Series {
                     id: uuid::Uuid::new_v4().to_string(),
                     library_id: book.library_id.clone(),
-                    title: title.to_string(),
+                    title,
                     author: book.author.clone(),
                     narrator: book.narrator.clone(),
                     cover_url: book.cover_url.clone(),

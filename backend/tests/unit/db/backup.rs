@@ -77,7 +77,7 @@ fn upgrade_backup_is_created_before_schema_changes() {
     database(&path);
     Connection::open(&path)
         .unwrap()
-        .execute("DELETE FROM schema_migrations WHERE version=32", [])
+        .execute("DELETE FROM schema_migrations WHERE version=33", [])
         .unwrap();
     prepare_database(&path).unwrap();
     let files = list(&path).unwrap();
@@ -89,6 +89,6 @@ fn upgrade_backup_is_created_before_schema_changes() {
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
-        31
+        32
     );
 }

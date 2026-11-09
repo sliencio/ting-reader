@@ -10,7 +10,7 @@ import SeriesCard from '../../shared/cards/SeriesCard';
 import SeriesModal from '../../shared/modals/SeriesModal';
 import DeleteLibraryItemModal from './bookDetail/DeleteLibraryItemModal';
 import DisplaySettingsMenu from '../../shared/widgets/DisplaySettingsMenu';
-import { Search, Database, Plus, Library as LibraryIcon, Layers, Check, X, CheckSquare, ChevronDown, Trash2, BookCheck, BookX } from 'lucide-react';
+import { Search, Database, Plus, Library as LibraryIcon, Layers, Check, X, CheckSquare, ChevronDown, Trash2, BookCheck, BookX, RefreshCw } from 'lucide-react';
 import { usePlayerStore } from '../../core/stores/playerStore';
 import { useAuthStore } from '../../core/stores/authStore';
 import { getPinyinInitial } from '../../core/utils/pinyin';
@@ -54,6 +54,7 @@ const BookshelfPage: React.FC = () => {
   const [deletingSeries, setDeletingSeries] = useState(false);
   const [deleteSourceFiles, setDeleteSourceFiles] = useState(false);
   const [savingReadStatus, setSavingReadStatus] = useState(false);
+  const [rescanningBooks, setRescanningBooks] = useState(false);
   const [confirmUnread, setConfirmUnread] = useState(false);
 
   useEffect(() => {
@@ -297,6 +298,34 @@ const BookshelfPage: React.FC = () => {
       alert(apiErrorMessage(err, t('common.saveFailed')));
     } finally {
       setSavingReadStatus(false);
+    }
+  };
+
+  const handleRescanBooks = async () => {
+    if (selectedBookIds.length === 0 || rescanningBooks) return;
+    const selected = selectedBookIds
+      .map(id => books.find(b => b.id === id))
+      .filter((book): book is Book => Boolean(book));
+    // The server scopes the scan by library, so one request per library.
+    const byLibrary = new Map<string, string[]>();
+    for (const book of selected) {
+      const ids = byLibrary.get(book.library_id) ?? [];
+      ids.push(book.id);
+      byLibrary.set(book.library_id, ids);
+    }
+    if (byLibrary.size === 0) return;
+    setRescanningBooks(true);
+    try {
+      for (const [libraryId, ids] of byLibrary) {
+        await bookOperations.current?.rescanBooks(libraryId, ids);
+      }
+      alert(t('bookshelf.rescanStarted', '已开始同步所选书籍'));
+      exitSelectionMode();
+    } catch (err) {
+      console.error('Failed to rescan selected books', err);
+      alert(apiErrorMessage(err, t('bookshelf.rescanFailed', '同步失败')));
+    } finally {
+      setRescanningBooks(false);
     }
   };
 
@@ -615,6 +644,18 @@ const BookshelfPage: React.FC = () => {
                               </button>
                               {isAdmin && <>
                               <div className="mx-3 my-1 border-t border-slate-100 dark:border-slate-800" />
+                              <button
+                                role="menuitem"
+                                onClick={() => {
+                                  setIsOperationsOpen(false);
+                                  void handleRescanBooks();
+                                }}
+                                disabled={selectedBookIds.length === 0 || rescanningBooks}
+                                className="w-full text-left px-4 py-2.5 text-sm font-semibold rounded-xl transition-colors text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800 flex items-center gap-2 disabled:opacity-50 disabled:hover:bg-transparent"
+                              >
+                                <RefreshCw size={16} className={rescanningBooks ? 'animate-spin' : ''} />
+                                <span>{t('bookshelf.rescanSelected', '重新同步所选')}</span>
+                              </button>
                               <button
                                 role="menuitem"
                                 onClick={() => {

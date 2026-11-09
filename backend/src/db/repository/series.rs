@@ -1,4 +1,5 @@
 use crate::core::app::error::{Result, TingError};
+use crate::core::books::series_title::series_identity;
 use crate::db::manager::DatabaseManager;
 use crate::db::models::{Book, Series, SeriesBook};
 use crate::db::repository::base::Repository;
@@ -53,47 +54,76 @@ impl SeriesRepository {
     }
 
     /// Find or create a series atomically within one library.
+    ///
+    /// Identity is `title_key`, not the raw title: `斗破苍穹 第2卷` and
+    /// `斗破苍穹` are the same collection no matter which source wrote it.
+    /// The write lock is taken up front (IMMEDIATE) so two concurrent scans
+    /// cannot both read "missing" and race into the unique index.
     pub async fn find_or_create_by_title(&self, new_series: Series) -> Result<Series> {
-        let search_title = new_series.title.trim().to_lowercase();
-        self.db.transaction(move |tx| {
-            let existing = tx.query_row(
-                "SELECT id, library_id, title, author, narrator, cover_url, description, created_at, updated_at \
-                 FROM series WHERE LOWER(TRIM(title)) = ? AND library_id = ?",
-                rusqlite::params![&search_title, &new_series.library_id],
-                map_series_row,
-            ).optional().map_err(TingError::DatabaseError)?;
+        let identity = series_identity(&new_series.title);
+        let mut new_series = new_series;
+        new_series.title = identity.title;
+        let search_key = identity.key;
+        self.db
+            .transaction_immediate(move |tx| {
+                let existing = tx.query_row(
+                    "SELECT id, library_id, title, author, narrator, cover_url, description, created_at, updated_at \
+                     FROM series WHERE title_key = ? AND library_id = ?",
+                    rusqlite::params![&search_key, &new_series.library_id],
+                    map_series_row,
+                ).optional().map_err(TingError::DatabaseError)?;
 
-            if let Some(s) = existing {
-                Ok(s)
-            } else {
-                tx.execute(
-                    "INSERT INTO series (id, library_id, title, author, narrator, cover_url, description, created_at, updated_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    rusqlite::params![
-                        &new_series.id,
-                        &new_series.library_id,
-                        &new_series.title,
-                        &new_series.author,
-                        &new_series.narrator,
-                        &new_series.cover_url,
-                        &new_series.description,
-                        &new_series.created_at,
-                        &new_series.updated_at,
-                    ],
-                ).map_err(TingError::DatabaseError)?;
-                Ok(new_series)
-            }
-        }).await
+                if let Some(s) = existing {
+                    Ok(s)
+                } else {
+                    tx.execute(
+                        "INSERT INTO series (id, library_id, title, title_key, author, narrator, cover_url, description, created_at, updated_at) \
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        rusqlite::params![
+                            &new_series.id,
+                            &new_series.library_id,
+                            &new_series.title,
+                            &search_key,
+                            &new_series.author,
+                            &new_series.narrator,
+                            &new_series.cover_url,
+                            &new_series.description,
+                            &new_series.created_at,
+                            &new_series.updated_at,
+                        ],
+                    ).map_err(TingError::DatabaseError)?;
+                    Ok(new_series)
+                }
+            })
+            .await
+    }
+
+    /// Look up a series by its identity key inside one library.
+    pub async fn find_by_key(&self, library_id: &str, title_key: &str) -> Result<Option<Series>> {
+        let library_id = library_id.to_string();
+        let title_key = title_key.to_string();
+        self.db
+            .execute(move |conn| {
+                conn.query_row(
+                    "SELECT id, library_id, title, author, narrator, cover_url, description, created_at, updated_at \
+                     FROM series WHERE title_key = ? AND library_id = ?",
+                    rusqlite::params![&title_key, &library_id],
+                    map_series_row,
+                )
+                .optional()
+                .map_err(TingError::DatabaseError)
+            })
+            .await
     }
 
     /// Find series by title globally (across all libraries)
     pub async fn find_by_title(&self, title: &str) -> Result<Option<Series>> {
-        let title = title.trim().to_lowercase();
+        let key = series_identity(title).key;
         self.db.execute(move |conn| {
             conn.query_row(
                 "SELECT id, library_id, title, author, narrator, cover_url, description, created_at, updated_at \
-                 FROM series WHERE LOWER(TRIM(title)) = ?",
-                rusqlite::params![&title],
+                 FROM series WHERE title_key = ?",
+                rusqlite::params![&key],
                 map_series_row
             ).optional()
             .map_err(TingError::DatabaseError)
@@ -106,13 +136,13 @@ impl SeriesRepository {
         title: &str,
         library_id: &str,
     ) -> Result<Option<Series>> {
-        let title = title.trim().to_lowercase();
+        let key = series_identity(title).key;
         let library_id = library_id.to_string();
         self.db.execute(move |conn| {
             conn.query_row(
                 "SELECT id, library_id, title, author, narrator, cover_url, description, created_at, updated_at \
-                 FROM series WHERE LOWER(TRIM(title)) = ? AND library_id = ?",
-                rusqlite::params![&title, &library_id],
+                 FROM series WHERE title_key = ? AND library_id = ?",
+                rusqlite::params![&key, &library_id],
                 map_series_row
             ).optional()
             .map_err(TingError::DatabaseError)
@@ -289,18 +319,122 @@ impl SeriesRepository {
         }).await
     }
 
-    /// Add a book to a series
+    /// Add a book to a series.
+    ///
+    /// Callers here are explicit (sidecar declarations and admin curation), so
+    /// the link is upgraded away from `inferred` — otherwise a later rescan
+    /// would be allowed to drop a membership the user or the sidecar asked for.
     pub async fn add_book(&self, series_book: SeriesBook) -> Result<()> {
         self.db
             .execute(move |conn| {
                 conn.execute(
-                    "INSERT INTO series_books (series_id, book_id, book_order) VALUES (?, ?, ?) \
-                 ON CONFLICT(series_id, book_id) DO UPDATE SET book_order = excluded.book_order",
+                    "INSERT INTO series_books (series_id, book_id, book_order, source) \
+                     VALUES (?, ?, ?, '') \
+                     ON CONFLICT(series_id, book_id) DO UPDATE SET \
+                     book_order = excluded.book_order, source = ''",
                     rusqlite::params![
                         &series_book.series_id,
                         &series_book.book_id,
                         series_book.book_order
                     ],
+                )
+                .map_err(TingError::DatabaseError)?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Attach a book to a directory-inferred series, replacing any previous
+    /// inferred membership in the same library.
+    ///
+    /// A book belongs to at most one inferred series. Without the delete, a
+    /// book that moves from `书名 第1卷` to `书名` (or whose parent directory
+    /// is renamed) stayed in both, which is what made series look overlapped.
+    ///
+    /// Two limits keep this from fighting explicit curation:
+    /// * it never *adds* a guessed series to a book that already has a curated
+    ///   one (`source = ''`), so a sidecar declaration stays authoritative;
+    /// * it does still refresh the order of a link that already exists, so
+    ///   legacy links keep tracking their directory instead of going stale.
+    pub async fn link_inferred_book(
+        &self,
+        library_id: &str,
+        series_id: &str,
+        book_id: &str,
+        book_order: i32,
+    ) -> Result<()> {
+        let library_id = library_id.to_string();
+        let series_id = series_id.to_string();
+        let book_id = book_id.to_string();
+        self.db
+            .transaction(move |tx| {
+                let explicit: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM series_books WHERE book_id = ? AND source = '')",
+                        rusqlite::params![&book_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(TingError::DatabaseError)?;
+                let already_linked: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM series_books WHERE series_id = ? AND book_id = ?)",
+                        rusqlite::params![&series_id, &book_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(TingError::DatabaseError)?;
+                if explicit && !already_linked {
+                    return Ok(());
+                }
+                tx.execute(
+                    "DELETE FROM series_books WHERE book_id = ? AND source = 'inferred' \
+                     AND series_id IN (SELECT id FROM series WHERE library_id = ?) \
+                     AND series_id <> ?",
+                    rusqlite::params![&book_id, &library_id, &series_id],
+                )
+                .map_err(TingError::DatabaseError)?;
+                // Keep an existing row's owner: a curated link that happens to
+                // match the guessed series must not become inference-owned.
+                tx.execute(
+                    "INSERT INTO series_books (series_id, book_id, book_order, source) \
+                     VALUES (?, ?, ?, 'inferred') \
+                     ON CONFLICT(series_id, book_id) DO UPDATE SET \
+                     book_order = excluded.book_order",
+                    rusqlite::params![&series_id, &book_id, book_order],
+                )
+                .map_err(TingError::DatabaseError)?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Release inferred memberships in one library that an explicit sidecar
+    /// declaration is replacing.
+    ///
+    /// A book with `series` entries in `metadata.json` is explicitly placed by
+    /// the user, so a directory guess must not keep it in a second collection.
+    /// Only rows inference created are dropped; memberships the user curated
+    /// by hand have `source = ''` and survive.
+    pub async fn release_inferred_memberships(
+        &self,
+        library_id: &str,
+        book_id: &str,
+        keep_series_ids: Vec<String>,
+    ) -> Result<()> {
+        let library_id = library_id.to_string();
+        let book_id = book_id.to_string();
+        self.db
+            .transaction(move |tx| {
+                for series_id in &keep_series_ids {
+                    tx.execute(
+                        "UPDATE series_books SET source = '' WHERE series_id = ? AND book_id = ?",
+                        rusqlite::params![series_id, &book_id],
+                    )
+                    .map_err(TingError::DatabaseError)?;
+                }
+                tx.execute(
+                    "DELETE FROM series_books WHERE book_id = ? AND source = 'inferred' \
+                     AND series_id IN (SELECT id FROM series WHERE library_id = ?)",
+                    rusqlite::params![&book_id, &library_id],
                 )
                 .map_err(TingError::DatabaseError)?;
                 Ok(())
@@ -378,14 +512,16 @@ impl Repository<Series> for SeriesRepository {
 
     async fn create(&self, series: &Series) -> Result<()> {
         let series = series.clone();
+        let identity = series_identity(&series.title);
         self.db.execute(move |conn| {
             conn.execute(
-                "INSERT INTO series (id, library_id, title, author, narrator, cover_url, description, created_at, updated_at) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO series (id, library_id, title, title_key, author, narrator, cover_url, description, created_at, updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rusqlite::params![
                     &series.id,
                     &series.library_id,
-                    &series.title,
+                    &identity.title,
+                    &identity.key,
                     &series.author,
                     &series.narrator,
                     &series.cover_url,
@@ -400,13 +536,15 @@ impl Repository<Series> for SeriesRepository {
 
     async fn update(&self, series: &Series) -> Result<()> {
         let series = series.clone();
+        let identity = series_identity(&series.title);
         self.db.execute(move |conn| {
             conn.execute(
-                "UPDATE series SET library_id = ?, title = ?, author = ?, narrator = ?, \
+                "UPDATE series SET library_id = ?, title = ?, title_key = ?, author = ?, narrator = ?, \
                  cover_url = ?, description = ?, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
                 rusqlite::params![
                     &series.library_id,
-                    &series.title,
+                    &identity.title,
+                    &identity.key,
                     &series.author,
                     &series.narrator,
                     &series.cover_url,
@@ -429,3 +567,7 @@ impl Repository<Series> for SeriesRepository {
             .await
     }
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/db/repository/series.rs"]
+mod tests;

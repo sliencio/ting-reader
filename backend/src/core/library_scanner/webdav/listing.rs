@@ -32,12 +32,17 @@ enum WebDavSyncResponseDisposition {
 }
 
 impl LibraryScanner {
-    /// List all files in a WebDAV library recursively
+    /// List files in a WebDAV library recursively.
+    ///
+    /// `scope_urls` limits the traversal to those collection URLs (a per-book
+    /// rescan). A scoped listing only sees part of the library, so it is never
+    /// treated as authoritative and never drives deletion.
     pub(super) async fn list_webdav_files(
         &self,
         library: &crate::db::models::Library,
         task_id: Option<&str>,
         mode: ScanMode,
+        scope_urls: Option<&[String]>,
     ) -> Result<
         Vec<(
             String,
@@ -54,6 +59,7 @@ impl LibraryScanner {
         } else {
             format!("{base}/{path}")
         };
+        let scoped = scope_urls.filter(|urls| !urls.is_empty());
 
         let mut files = HashMap::new(); // URL -> (LastModified, ETag/LastModified validator)
         let mut cache_states = Vec::new();
@@ -72,8 +78,20 @@ impl LibraryScanner {
         let mut queue = std::collections::VecDeque::new();
         let mut visited_dirs = HashSet::new(); // Track visited directories to prevent cycles/re-visits
 
-        queue.push_back(root_url.clone());
-        visited_dirs.insert(root_url.clone());
+        match scoped {
+            Some(urls) => {
+                for url in urls {
+                    let url = url.trim_end_matches('/').to_string();
+                    if visited_dirs.insert(url.clone()) {
+                        queue.push_back(url);
+                    }
+                }
+            }
+            None => {
+                queue.push_back(root_url.clone());
+                visited_dirs.insert(root_url.clone());
+            }
+        }
 
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
@@ -97,7 +115,11 @@ impl LibraryScanner {
             None
         };
 
+        // The whole-library sync token describes the tree below `root_url`.
+        // Reusing it for a narrow rescan would return every file in the
+        // library, so scoped runs always walk the requested subtrees directly.
         if !mode.is_full()
+            && scoped.is_none()
             && let Some(sync_state) = self
                 .scan_state_repo
                 .find(&library.id, &root_url, "webdav_sync")
@@ -121,18 +143,23 @@ impl LibraryScanner {
         // Capture the collection token before the fallback/full traversal.
         // Saving a token obtained after traversal could miss a change that
         // happened between visiting its directory and fetching that token.
-        let baseline_sync_token = match self
-            .fetch_webdav_sync_token(&root_url, &client, username, password.as_deref())
-            .await
-        {
-            Ok(token) => token,
-            Err(e) => {
-                warn!(
-                    root_url = %root_url,
-                    error = %e,
-                    "Failed to capture WebDAV sync token before directory scan"
-                );
-                None
+        // A scoped run must not refresh it: it only visited part of the tree.
+        let baseline_sync_token = if scoped.is_some() {
+            None
+        } else {
+            match self
+                .fetch_webdav_sync_token(&root_url, &client, username, password.as_deref())
+                .await
+            {
+                Ok(token) => token,
+                Err(e) => {
+                    warn!(
+                        root_url = %root_url,
+                        error = %e,
+                        "Failed to capture WebDAV sync token before directory scan"
+                    );
+                    None
+                }
             }
         };
 
@@ -392,7 +419,10 @@ impl LibraryScanner {
             );
         }
 
-        if listing_complete {
+        // Only a complete, whole-library listing can prove that an entry is
+        // gone. A scoped rescan saw just the requested subtrees, so it upserts
+        // what it found and leaves every other cached entry untouched.
+        if listing_complete && scoped.is_none() {
             let mut current_dirs = HashMap::new();
             let mut current_files = HashMap::new();
             for state in cache_states {
@@ -443,7 +473,9 @@ impl LibraryScanner {
             self.scan_state_repo.upsert_many(cache_states).await?;
         }
 
-        if listing_complete {
+        // The sync token describes the whole tree; a scoped run never visited
+        // it, so it must not be refreshed or dropped here.
+        if listing_complete && scoped.is_none() {
             if let Some(sync_token) = baseline_sync_token {
                 let sync_state =
                     LibraryScanState::new(&library.id, &root_url, "webdav_sync", sync_token);
