@@ -380,6 +380,42 @@ impl ProgressRepository {
         expected: Option<i64>,
         device: Option<String>,
     ) -> Result<Option<i64>> {
+        self.write_progress(progress, expected, device, None, false)
+            .await
+    }
+
+    pub async fn upsert_latest(
+        &self,
+        progress: &Progress,
+        device: Option<String>,
+        device_type: Option<String>,
+    ) -> Result<Option<i64>> {
+        self.write_progress(progress, None, device, device_type, true)
+            .await
+    }
+
+    pub async fn devices(
+        &self,
+        progress_id: &str,
+    ) -> Result<Vec<crate::api::models::ProgressDevice>> {
+        let id = progress_id.to_owned();
+        self.db.execute(move |conn| {
+            let mut query = conn.prepare("SELECT device_id,device_type,position,updated_at FROM progress_device_history WHERE progress_id=? ORDER BY julianday(updated_at) DESC,device_id")?;
+            let rows = query.query_map([id], |row| Ok(crate::api::models::ProgressDevice {
+                device_id: row.get(0)?, device_type: row.get(1)?, position: row.get(2)?, updated_at: row.get(3)?,
+            }))?.collect::<std::result::Result<Vec<_>,_>>()?;
+            Ok(rows)
+        }).await
+    }
+
+    async fn write_progress(
+        &self,
+        progress: &Progress,
+        expected: Option<i64>,
+        device: Option<String>,
+        device_type: Option<String>,
+        latest: bool,
+    ) -> Result<Option<i64>> {
         let progress = progress.clone();
         self.db.transaction_immediate(move |conn| {
             let revision: i64 = conn.query_row(
@@ -387,6 +423,27 @@ impl ProgressRepository {
                 [&progress.user_id,&progress.book_id], |row| row.get(0),
             )?;
             if expected.is_some_and(|value| value != revision) { return Ok(None); }
+            let mut update_head = true;
+            if latest {
+                let head_at: Option<String> = conn.query_row(
+                    "SELECT p.updated_at FROM progress_heads h JOIN progress p ON p.id=h.progress_id WHERE h.user_id=?1 AND h.book_id=?2",
+                    [&progress.user_id,&progress.book_id], |row| row.get(0),
+                ).optional()?;
+                let chapter_at: Option<String> = conn.query_row(
+                    "SELECT updated_at FROM progress WHERE user_id=?1 AND book_id=?2 AND chapter_id IS ?3",
+                    rusqlite::params![progress.user_id,progress.book_id,progress.chapter_id], |row| row.get(0),
+                ).optional()?;
+                let newer = |saved: &str| conn.query_row(
+                    "SELECT julianday(?1) > julianday(?2)", [&progress.updated_at,saved], |row| row.get::<_,bool>(0),
+                );
+                update_head = match head_at { Some(at) => newer(&at)?, None => true };
+                if let Some(at) = chapter_at
+                    && !newer(&at)?
+                {
+                    record_device(conn, &progress, device.as_deref(), device_type.as_deref())?;
+                    return Ok(Some(revision));
+                }
+            }
             let progress_position: Option<f64> = if progress.chapter_id.is_none() {
                 conn.query_row(
                     "SELECT position FROM progress WHERE user_id = ? AND book_id = ? AND chapter_id IS NULL",
@@ -490,14 +547,14 @@ impl ProgressRepository {
                 if let Some(id) = existing_id {
                     conn.execute(
                         "UPDATE progress \
-                         SET position = ?, duration = ?, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'), history_hidden_at = NULL \
+                         SET position = ?, duration = ?, updated_at = ?, history_hidden_at = NULL \
                          WHERE id = ?",
-                        rusqlite::params![progress.position, progress.duration, id],
+                        rusqlite::params![progress.position, progress.duration, progress.updated_at, id],
                     ).map_err(TingError::DatabaseError)?;
                 } else {
                     conn.execute(
                         "INSERT INTO progress (id, user_id, book_id, chapter_id, position, duration, updated_at, history_hidden_at) \
-                         VALUES (?, ?, ?, ?, ?, ?, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL)",
+                         VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
                         rusqlite::params![
                             &progress.id,
                             &progress.user_id,
@@ -505,17 +562,18 @@ impl ProgressRepository {
                             &progress.chapter_id,
                             progress.position,
                             progress.duration,
+                            progress.updated_at,
                         ],
                     ).map_err(TingError::DatabaseError)?;
                 }
             } else {
                 conn.execute(
                     "INSERT INTO progress (id, user_id, book_id, chapter_id, position, duration, updated_at, history_hidden_at) \
-                     VALUES (?, ?, ?, ?, ?, ?, STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'), NULL) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, NULL) \
                      ON CONFLICT(user_id, book_id, chapter_id) DO UPDATE SET \
                      position = excluded.position, \
                      duration = excluded.duration, \
-                     updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+                     updated_at = excluded.updated_at, \
                      history_hidden_at = NULL",
                     rusqlite::params![
                         &progress.id,
@@ -524,18 +582,36 @@ impl ProgressRepository {
                         &progress.chapter_id,
                         progress.position,
                         progress.duration,
+                        progress.updated_at,
                     ],
                 ).map_err(TingError::DatabaseError)?;
             }
-            conn.execute(
+            record_device(conn, &progress, device.as_deref(), device_type.as_deref())?;
+            if update_head { conn.execute(
                 "INSERT INTO progress_heads(user_id,book_id,revision,device_id,progress_id)
                  VALUES(?1,?2,?3,?4,(SELECT id FROM progress WHERE user_id=?1 AND book_id=?2 AND chapter_id IS ?5 LIMIT 1))
                  ON CONFLICT(user_id,book_id) DO UPDATE SET revision=excluded.revision,device_id=excluded.device_id,progress_id=excluded.progress_id",
                 rusqlite::params![progress.user_id,progress.book_id,revision+1,device,progress.chapter_id],
-            )?;
-            Ok(Some(revision+1))
+            )?; }
+            Ok(Some(if update_head { revision+1 } else { revision }))
         }).await
     }
+}
+
+fn record_device(
+    conn: &rusqlite::Connection,
+    progress: &Progress,
+    device: Option<&str>,
+    device_type: Option<&str>,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO progress_device_history(progress_id,device_id,device_type,position,updated_at)
+         SELECT id,?4,?5,?6,?7 FROM progress WHERE user_id=?1 AND book_id=?2 AND chapter_id IS ?3
+         ON CONFLICT(progress_id,device_id) DO UPDATE SET device_type=excluded.device_type,position=excluded.position,updated_at=excluded.updated_at
+         WHERE julianday(excluded.updated_at)>julianday(progress_device_history.updated_at)",
+        rusqlite::params![progress.user_id,progress.book_id,progress.chapter_id,device.unwrap_or(""),device_type,progress.position,progress.updated_at],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

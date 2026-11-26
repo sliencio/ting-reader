@@ -597,6 +597,7 @@ pub async fn get_book_progress(
             let mut response = ProgressResponse::from(progress);
             response.chapter_title = chapter.as_ref().and_then(|item| item.title.clone());
             response.chapter_duration = chapter.and_then(|item| item.duration);
+            response.devices = state.progress_repo.devices(&response.id).await?;
             let mut value = serde_json::to_value(response).map_err(|e| {
                 TingError::serialization(
                     crate::core::app::error::CodecErrorKind::InvalidData,
@@ -608,9 +609,26 @@ pub async fn get_book_progress(
             Ok(Json(value))
         }
         None => Ok(Json(
-            serde_json::json!({"book_id":book_id,"revision":revision,"position":0}),
+            serde_json::json!({"book_id":book_id,"revision":revision,"position":0,"latest_wins":true}),
         )),
     }
+}
+
+pub(crate) async fn latest_progress_value(
+    state: &AppState,
+    user: &str,
+    book: &str,
+) -> Result<serde_json::Value> {
+    let (current, revision) = state.progress_repo.snapshot(user, book).await?;
+    let mut value = if let Some(progress) = current {
+        let mut response = ProgressResponse::from(progress);
+        response.devices = state.progress_repo.devices(&response.id).await?;
+        serde_json::json!(response)
+    } else {
+        serde_json::json!({"book_id":book,"position":0,"latest_wins":true})
+    };
+    value["revision"] = revision.into();
+    Ok(value)
 }
 
 /// Handler for POST /api/progress - Update playback progress (UPSERT)
@@ -642,7 +660,11 @@ pub async fn update_progress(
             "Book access denied".into(),
         ));
     }
-    if !req.position.is_finite()
+    if req
+        .device_type
+        .as_ref()
+        .is_some_and(|value| value.len() > 32)
+        || !req.position.is_finite()
         || req.position < 0.0
         || req.base_revision.is_some_and(|value| value < 0)
         || req
@@ -688,14 +710,25 @@ pub async fn update_progress(
         chapter_id: req.chapter_id.clone(),
         position: req.position,
         duration: req.duration,
-        updated_at: chrono::Utc::now().to_rfc3339(),
+        updated_at: req
+            .listened_at
+            .unwrap_or_else(chrono::Utc::now)
+            .min(chrono::Utc::now())
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
     };
 
-    let Some(revision) = state
-        .progress_repo
-        .upsert_checked(&progress, req.base_revision, req.device_id.clone())
-        .await?
-    else {
+    let saved = if req.listened_at.is_some() {
+        state
+            .progress_repo
+            .upsert_latest(&progress, req.device_id.clone(), req.device_type.clone())
+            .await?
+    } else {
+        state
+            .progress_repo
+            .upsert_checked(&progress, req.base_revision, req.device_id.clone())
+            .await?
+    };
+    let Some(revision) = saved else {
         let (current, revision) = state.progress_repo.snapshot(&user.id, &req.book_id).await?;
         let mut current = current
             .map(|item| serde_json::json!(item))
@@ -713,6 +746,17 @@ pub async fn update_progress(
             playback_start,
         )
         .await;
+    }
+
+    if req.listened_at.is_some() {
+        let value = latest_progress_value(&state, &user.id, &req.book_id).await?;
+        let mut event = value.clone();
+        event["type"] = "progress_updated".into();
+        state
+            .ws_manager
+            .broadcast(&user.id, &event.to_string())
+            .await;
+        return Ok((StatusCode::OK, Json(value)).into_response());
     }
 
     state.ws_manager.broadcast(&user.id, &serde_json::json!({"type":"progress_updated","book_id":req.book_id,"chapter_id":req.chapter_id,"position":req.position,"updated_at":progress.updated_at,"revision":revision,"device_id":req.device_id}).to_string()).await;

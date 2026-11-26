@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tracing::{error, info, warn};
 
-pub const LATEST_SCHEMA_VERSION: i64 = 33;
+pub const LATEST_SCHEMA_VERSION: i64 = 34;
 
 /// Migration version tracking table
 const MIGRATION_TABLE: &str = r#"
@@ -968,6 +968,22 @@ pub fn run_migrations(conn: &mut Connection) -> Result<()> {
     }
     if current_version < 33 {
         migrate_series_identity(conn)?;
+    }
+    if current_version < 34 {
+        apply_migration(
+            conn,
+            34,
+            r#"
+CREATE TABLE progress_device_history (
+    progress_id TEXT NOT NULL REFERENCES progress(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    device_type TEXT,
+    position REAL NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (progress_id, device_id)
+);
+"#,
+        )?;
     }
 
     info!("Database migrations completed successfully");

@@ -37,6 +37,8 @@ enum ClientMessage {
         playback_start: Option<f64>,
         base_revision: Option<i64>,
         device_id: Option<String>,
+        device_type: Option<String>,
+        listened_at: Option<chrono::DateTime<chrono::Utc>>,
     },
     #[serde(rename = "ping")]
     Ping,
@@ -211,6 +213,8 @@ async fn handle_client_message(
             playback_start,
             base_revision,
             device_id,
+            device_type,
+            listened_at,
         } => {
             let user = state.user_repo.find_by_id(user_id).await.ok().flatten();
             let allowed = match user.as_ref() {
@@ -237,6 +241,7 @@ async fn handle_client_message(
                 || position < 0.0
                 || base_revision.is_some_and(|value| value < 0)
                 || device_id.as_ref().is_some_and(|value| value.len() > 128)
+                || device_type.as_ref().is_some_and(|value| value.len() > 32)
             {
                 ws_manager.broadcast(user_id,&serde_json::json!({"type":"error","code":"INVALID_PROGRESS","message":"无权访问或进度参数无效"}).to_string()).await;
                 return;
@@ -249,7 +254,10 @@ async fn handle_client_message(
                 chapter_id: chapter_id.clone(),
                 position,
                 duration: None,
-                updated_at: chrono::Utc::now().to_rfc3339(),
+                updated_at: listened_at
+                    .unwrap_or_else(chrono::Utc::now)
+                    .min(chrono::Utc::now())
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             };
 
             debug!(
@@ -260,10 +268,17 @@ async fn handle_client_message(
                 position
             );
 
-            let saved = state
-                .progress_repo
-                .upsert_checked(&progress, base_revision, device_id.clone())
-                .await;
+            let saved = if listened_at.is_some() {
+                state
+                    .progress_repo
+                    .upsert_latest(&progress, device_id.clone(), device_type)
+                    .await
+            } else {
+                state
+                    .progress_repo
+                    .upsert_checked(&progress, base_revision, device_id.clone())
+                    .await
+            };
             if let Err(e) = &saved {
                 warn!(
                     user_id = %user_id,
@@ -304,6 +319,17 @@ async fn handle_client_message(
                     playback_start,
                 )
                 .await;
+            }
+
+            if listened_at.is_some() {
+                if let Ok(mut value) =
+                    crate::api::handlers::users::latest_progress_value(state, user_id, &book_id)
+                        .await
+                {
+                    value["type"] = "progress_updated".into();
+                    ws_manager.broadcast(user_id, &value.to_string()).await;
+                }
+                return;
             }
 
             // Broadcast to all sessions of this user (including other devices)

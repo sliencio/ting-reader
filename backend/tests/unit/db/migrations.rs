@@ -8,7 +8,8 @@ fn migration_v33_merges_duplicate_series_and_preserves_members() {
     // produced: one series per title normalization, with an overlapping book.
     conn.execute_batch(
         "DROP INDEX idx_series_library_title_key;
-         DELETE FROM schema_migrations WHERE version=33;
+         DELETE FROM schema_migrations WHERE version>=33;
+         DROP TABLE progress_device_history;
          DROP TABLE series_books;
          DROP TABLE series;
          CREATE TABLE series (
@@ -385,4 +386,34 @@ CREATE TABLE listening_events (
     assert_eq!(total_rows, 1);
     assert_eq!(updates, 10_000);
     assert_eq!(seconds, 20_000.0);
+}
+
+#[test]
+fn migration_v34_preserves_progress_and_adds_device_history_once() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    run_migrations(&mut conn).unwrap();
+    conn.execute_batch("DROP TABLE progress_device_history;
+        DELETE FROM schema_migrations WHERE version=34;
+        INSERT INTO users(id,username,password_hash) VALUES('device-user','device-user','hash');
+        INSERT INTO libraries(id,name,type,url) VALUES('device-lib','Test','local','');
+        INSERT INTO books(id,library_id,title,path,hash) VALUES('device-book','device-lib','Book','/book','device-hash');
+        INSERT INTO chapters(id,book_id,title,path) VALUES('device-chapter','device-book','Chapter','/chapter');
+        INSERT INTO progress(id,user_id,book_id,chapter_id,position,updated_at)
+            VALUES('old-progress','device-user','device-book','device-chapter',42,'2026-11-25T10:00:00Z');").unwrap();
+    run_migrations(&mut conn).unwrap();
+    run_migrations(&mut conn).unwrap();
+    let position: f64 = conn
+        .query_row(
+            "SELECT position FROM progress WHERE id='old-progress'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(position, 42.0);
+    let devices: i64 = conn
+        .query_row("SELECT COUNT(*) FROM progress_device_history", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(devices, 0);
 }

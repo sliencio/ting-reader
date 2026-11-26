@@ -288,7 +288,9 @@ impl ReadingRepository {
             let total = conn.query_row("SELECT COUNT(*) FROM progress
                 WHERE user_id=? AND book_id=? AND history_hidden_at IS NULL AND chapter_id IS NOT NULL",
                 [&user,&book], |row| row.get(0))?;
-            let mut stmt = conn.prepare("SELECT p.id,p.chapter_id,p.position,p.duration,p.updated_at,c.title,c.duration
+            let mut stmt = conn.prepare("SELECT p.id,p.chapter_id,p.position,p.duration,p.updated_at,c.title,c.duration,
+                (SELECT COALESCE(json_group_array(json_object('device_id',device_id,'device_type',device_type,'position',position,'updated_at',updated_at)),'[]')
+                 FROM (SELECT * FROM progress_device_history d WHERE d.progress_id=p.id ORDER BY julianday(updated_at) DESC,device_id))
                 FROM progress p JOIN chapters c ON c.id=p.chapter_id
                 WHERE p.user_id=?1 AND p.book_id=?2 AND p.history_hidden_at IS NULL
                 ORDER BY p.updated_at DESC,p.id LIMIT ?3 OFFSET ?4")?;
@@ -298,6 +300,7 @@ impl ReadingRepository {
                     position:row.get(2)?,duration:row.get(3)?,updated_at:row.get(4)?,
                     chapter_title:row.get(5)?,chapter_duration:row.get(6)?,
                     book_title:None,cover_url:None,library_id:None,
+                    devices:serde_json::from_str(&row.get::<_,String>(7)?).unwrap_or_default(),latest_wins:true,
                 })
             })?.collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(Page {items,total,page,page_size})

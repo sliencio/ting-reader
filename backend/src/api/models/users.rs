@@ -1,5 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProgressDevice {
+    pub device_id: String,
+    pub device_type: Option<String>,
+    pub position: f64,
+    pub updated_at: String,
+}
+
 // Progress Management API models
 
 /// Response for progress operations
@@ -17,6 +25,8 @@ pub struct ProgressResponse {
     pub library_id: Option<String>,
     pub chapter_title: Option<String>,
     pub chapter_duration: Option<i32>,
+    pub devices: Vec<ProgressDevice>,
+    pub latest_wins: bool,
 }
 
 impl From<crate::db::models::Progress> for ProgressResponse {
@@ -34,6 +44,8 @@ impl From<crate::db::models::Progress> for ProgressResponse {
             library_id: None,
             chapter_title: None,
             chapter_duration: None,
+            devices: Vec::new(),
+            latest_wins: true,
         }
     }
 }
@@ -76,6 +88,8 @@ pub struct UpdateProgressRequest {
     pub playback_start: Option<f64>,
     pub base_revision: Option<i64>,
     pub device_id: Option<String>,
+    pub device_type: Option<String>,
+    pub listened_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 // Favorites Management API models

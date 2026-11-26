@@ -260,3 +260,92 @@ async fn cleans_up_long_hidden_progress() {
         .unwrap();
     assert_eq!(count, 0);
 }
+
+#[tokio::test]
+async fn latest_listening_time_wins_even_when_seeking_backwards() {
+    let (_, repository) = create_repository().await;
+    let mut phone = progress("phone-play", 80.0);
+    phone.updated_at = "2026-11-26T10:00:00.000Z".into();
+    let mut desktop = progress("desktop-play", 20.0);
+    desktop.updated_at = "2026-11-26T10:01:00.000Z".into();
+    let (a, b) = tokio::join!(
+        repository.upsert_latest(&desktop, Some("desktop".into()), Some("windows".into())),
+        repository.upsert_latest(&phone, Some("phone".into()), Some("ios".into())),
+    );
+    assert!(a.unwrap().is_some());
+    assert!(b.unwrap().is_some());
+    let (head, revision) = repository.snapshot("user-1", "book-1").await.unwrap();
+    let head = head.unwrap();
+    assert_eq!(head.position, 20.0);
+    assert_eq!(head.updated_at, desktop.updated_at);
+    let devices = repository.devices(&head.id).await.unwrap();
+    assert_eq!(devices.len(), 2);
+    assert_eq!(devices[0].device_type.as_deref(), Some("windows"));
+    assert_eq!(devices[1].device_type.as_deref(), Some("ios"));
+    assert_eq!(devices[1].position, 80.0);
+    repository
+        .upsert_latest(&phone, Some("phone".into()), Some("ios".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        repository.snapshot("user-1", "book-1").await.unwrap().1,
+        revision
+    );
+    assert_eq!(repository.devices(&head.id).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn delayed_offline_chapters_keep_device_history_without_rewinding_resume() {
+    let (db, repository) = create_repository().await;
+    db.execute(|conn| {
+        conn.execute("INSERT INTO chapters(id,book_id,title,path) VALUES('chapter-2','book-1','Second','/second')", [])?;
+        Ok(())
+    }).await.unwrap();
+    let mut newest = progress("mac-play", 15.0);
+    newest.chapter_id = Some("chapter-2".into());
+    newest.updated_at = "2026-11-26T10:02:00.000Z".into();
+    repository
+        .upsert_latest(&newest, Some("mac".into()), Some("macos".into()))
+        .await
+        .unwrap();
+    let mut older = progress("offline-phone", 90.0);
+    older.updated_at = "2026-11-26T10:00:00.000Z".into();
+    repository
+        .upsert_latest(&older, Some("phone".into()), Some("android".into()))
+        .await
+        .unwrap();
+    let (head, revision) = repository.snapshot("user-1", "book-1").await.unwrap();
+    assert_eq!(head.unwrap().chapter_id.as_deref(), Some("chapter-2"));
+    assert_eq!(revision, 1);
+    let history = crate::db::repository::reading::ReadingRepository::new(db.clone())
+        .history_chapters("user-1", "book-1", 1, 50)
+        .await
+        .unwrap();
+    assert_eq!(history.total, 2);
+    assert_eq!(
+        history.items[0].devices[0].device_type.as_deref(),
+        Some("macos")
+    );
+    assert_eq!(
+        history.items[1].devices[0].device_type.as_deref(),
+        Some("android")
+    );
+    assert_eq!(history.items[1].devices[0].updated_at, older.updated_at);
+    db.execute(|conn| {
+        conn.execute("DELETE FROM progress", [])?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let count: i64 = db
+        .execute(|conn| {
+            Ok(
+                conn.query_row("SELECT COUNT(*) FROM progress_device_history", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
